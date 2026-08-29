@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://asciinema.org/a/7i7sBV2TOgTIWg90"><img src="docs/assets/ac-demo.svg" width="820" alt="ac demo: infix arithmetic, scale, hex output, math library, factorial, and RPN macros"></a>
+  <a href="https://asciinema.org/a/7i7sBV2TOgTIWg90"><img src="docs/assets/ac-demo.gif" width="820" alt="ac demo: infix arithmetic, scale, hex output, math library, factorial, and RPN macros"></a>
 </p>
 
 <h1 align="center">ac</h1>
