@@ -1,6 +1,12 @@
-# ac
+<p align="center">
+  <a href="https://asciinema.org/a/7i7sBV2TOgTIWg90"><img src="docs/assets/ac-demo.svg" width="820" alt="ac demo: infix arithmetic, scale, hex output, math library, factorial, and RPN macros"></a>
+</p>
 
-`ac` is a calculator for the terminal. It is a cousin of the POSIX tools `bc` and `dc`. It is written in Zig 0.16.0.
+<h1 align="center">ac</h1>
+
+<p align="center">
+A calculator for the terminal. A cousin of POSIX <code>bc</code> and <code>dc</code>. Written in Zig 0.16.0.
+</p>
 
 `ac` works with big decimal numbers of no fixed size. Addition, subtraction, and multiplication are exact. Division, remainder, square root, and power cut their results to `scale`.
 
