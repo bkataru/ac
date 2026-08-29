@@ -315,7 +315,11 @@ pub const Parser = struct {
         self.advance();
 
         var params: std.ArrayList(ParamSpec) = .empty;
-        errdefer params.deinit(self.allocator);
+        // One errdefer: free the member names, then the list buffer.
+        errdefer {
+            for (params.items) |p| self.allocator.free(p.name);
+            params.deinit(self.allocator);
+        }
         if (self.current.kind != .left_paren) return error.ExpectedLeftParen;
         self.advance();
         while (self.current.kind != .right_paren) {
@@ -326,16 +330,21 @@ pub const Parser = struct {
                 self.advance();
             }
             if (self.current.kind != .identifier) return error.ExpectedExpression;
-            const pname = self.allocator.dupe(u8, self.current.lexeme) catch return error.OutOfMemory;
-            errdefer self.allocator.free(pname);
-            self.advance();
-            if (self.current.kind == .left_bracket) {
-                if (kind != .array_ref) kind = .array_copy;
-                self.advance(); // '['
-                if (self.current.kind != .right_bracket) return error.ExpectedExpression;
-                self.advance(); // ']'
+            // Block scope: on error before the append, pname is freed once
+            // here; after the append, ownership sits in params and the
+            // errdefer at the function level handles it.
+            {
+                const pname = self.allocator.dupe(u8, self.current.lexeme) catch return error.OutOfMemory;
+                errdefer self.allocator.free(pname);
+                self.advance();
+                if (self.current.kind == .left_bracket) {
+                    if (kind != .array_ref) kind = .array_copy;
+                    self.advance(); // '['
+                    if (self.current.kind != .right_bracket) return error.ExpectedExpression;
+                    self.advance(); // ']'
+                }
+                params.append(self.allocator, .{ .name = pname, .kind = kind }) catch return error.OutOfMemory;
             }
-            params.append(self.allocator, .{ .name = pname, .kind = kind }) catch return error.OutOfMemory;
             if (self.current.kind == .comma) {
                 self.advance();
             } else if (self.current.kind != .right_paren) {
@@ -346,12 +355,19 @@ pub const Parser = struct {
 
         // Optional [auto a, b[n]] list directly after the params.
         var autos: std.ArrayList(AutoEntry) = .empty;
-        errdefer autos.deinit(self.allocator);
+        // One errdefer: free the entries, then the list buffer.
+        errdefer {
+            for (autos.items) |a| self.freeAutoEntry(a);
+            autos.deinit(self.allocator);
+        }
         if (self.current.kind == .left_bracket) {
             self.advance();
             while (self.current.kind != .right_bracket) {
                 const entry = (try self.parseAutoEntry()) orelse return error.ExpectedExpression;
-                autos.append(self.allocator, entry) catch return error.OutOfMemory;
+                autos.append(self.allocator, entry) catch {
+                    self.freeAutoEntry(entry);
+                    return error.OutOfMemory;
+                };
                 if (self.current.kind == .comma) {
                     self.advance();
                 } else if (self.current.kind != .right_bracket) {
@@ -383,20 +399,40 @@ pub const Parser = struct {
         if (self.current.kind == .left_bracket) {
             self.advance(); // '['
             size = (try self.parsePrecedence(.assignment)) orelse return error.ExpectedExpression;
+            errdefer if (size) |sz| {
+                sz.deinit(self.allocator);
+                self.allocator.destroy(sz);
+            };
             if (self.current.kind != .right_bracket) return error.ExpectedExpression;
             self.advance(); // ']'
         }
         return .{ .name = aname, .size = size };
     }
 
+    /// Free an AutoEntry whose ownership was never transferred.
+    fn freeAutoEntry(self: *Self, entry: AutoEntry) void {
+        self.allocator.free(entry.name);
+        if (entry.size) |sz| {
+            sz.deinit(self.allocator);
+            self.allocator.destroy(sz);
+        }
+    }
+
     /// Parse 'auto a, b[10], c;' as a standalone statement (function scope).
     fn parseAutoStmt(self: *Self) Error!*Stmt {
         self.advance(); // consume 'auto'
         var autos: std.ArrayList(AutoEntry) = .empty;
-        errdefer autos.deinit(self.allocator);
+        // One errdefer: free the entries, then the list buffer.
+        errdefer {
+            for (autos.items) |a| self.freeAutoEntry(a);
+            autos.deinit(self.allocator);
+        }
         while (true) {
             const entry = (try self.parseAutoEntry()) orelse return error.ExpectedExpression;
-            autos.append(self.allocator, entry) catch return error.OutOfMemory;
+            autos.append(self.allocator, entry) catch {
+                self.freeAutoEntry(entry);
+                return error.OutOfMemory;
+            };
             self.skipTerminators();
             if (self.current.kind != .comma) break;
             self.advance();
@@ -765,9 +801,14 @@ pub const Parser = struct {
         // destroyed and the name moves into the new node.
         const name = switch (left.*) {
             .variable => |n| n,
-            else => return error.InvalidOperand,
+            else => {
+                left.deinit(self.allocator);
+                self.allocator.destroy(left);
+                return error.InvalidOperand;
+            },
         };
         self.allocator.destroy(left);
+        errdefer self.allocator.free(name);
         self.advance(); // consume '['
         if (self.current.kind == .right_bracket) {
             self.advance(); // consume ']'
@@ -950,6 +991,10 @@ pub const Parser = struct {
 
     /// Parse binary operator (left associative)
     fn parseBinary(self: *Self, left: *Expr, op: BinaryOp) !*Expr {
+        errdefer {
+            left.deinit(self.allocator);
+            self.allocator.destroy(left);
+        }
         const prec = self.getInfixPrecedence();
         self.advance();
 
@@ -957,6 +1002,10 @@ pub const Parser = struct {
         const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(prec) + 1)) orelse {
             return error.ExpectedExpression;
         };
+        errdefer {
+            right.deinit(self.allocator);
+            self.allocator.destroy(right);
+        }
 
         const expr = try self.allocator.create(Expr);
         expr.* = .{ .binary = .{ .left = left, .op = op, .right = right } };
@@ -965,6 +1014,10 @@ pub const Parser = struct {
 
     /// Parse binary operator (right associative - power, assignment)
     fn parseBinaryRightAssoc(self: *Self, left: *Expr, op: BinaryOp) !*Expr {
+        errdefer {
+            left.deinit(self.allocator);
+            self.allocator.destroy(left);
+        }
         const prec = self.getInfixPrecedence();
         self.advance();
 
@@ -972,6 +1025,10 @@ pub const Parser = struct {
         const right = try self.parsePrecedence(prec) orelse {
             return error.ExpectedExpression;
         };
+        errdefer {
+            right.deinit(self.allocator);
+            self.allocator.destroy(right);
+        }
 
         const expr = try self.allocator.create(Expr);
         expr.* = .{ .binary = .{ .left = left, .op = op, .right = right } };
@@ -1174,4 +1231,38 @@ test "Parser unary minus" {
         try std.testing.expect(e.* == .unary);
         try std.testing.expectEqual(UnaryOp.negate, e.unary.op);
     }
+}
+
+test "parseDefine error frees params and autos" {
+    const allocator = std.testing.allocator;
+
+    // Missing body after collected params: the errdefer must free the
+    // appended param names.
+    var lexer = Lexer.init("define f(a, )");
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+    try std.testing.expectError(error.ExpectedExpression, parser.parseTopLevel());
+
+    // In-loop failure after a param was appended.
+    var lexer2 = Lexer.init("define f(a 1)");
+    var parser2 = Parser.init(&lexer2, allocator);
+    defer parser2.deinit();
+    try std.testing.expectError(error.ExpectedRightParen, parser2.parseTopLevel());
+
+    // Autos list: an appended entry must be freed when a later entry fails.
+    var lexer3 = Lexer.init("define f() [x, ]");
+    var parser3 = Parser.init(&lexer3, allocator);
+    defer parser3.deinit();
+    try std.testing.expectError(error.ExpectedExpression, parser3.parseTopLevel());
+}
+
+test "infix error frees left operand" {
+    const allocator = std.testing.allocator;
+
+    // Quote is not a token: RHS of assignment raises UnexpectedToken.
+    // The already-built left operand (scale) must still be freed.
+    var lexer = Lexer.init("scale = \"s\"");
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+    try std.testing.expectError(error.UnexpectedToken, parser.parseTopLevel());
 }

@@ -9,6 +9,8 @@ const Expr = @import("parse.zig").Expr;
 const Stmt = @import("parse.zig").Stmt;
 const BinaryOp = @import("parse.zig").BinaryOp;
 const UnaryOp = @import("parse.zig").UnaryOp;
+const Lexer = @import("lex.zig").Lexer;
+const Parser = @import("parse.zig").Parser;
 
 // Forward declare State from main
 const State = @import("main.zig").State;
@@ -237,6 +239,7 @@ pub const Evaluator = struct {
     fn evalAssignment(self: *Self, target: *const Expr, op: BinaryOp, value_expr: *const Expr) EvalError!Value {
         // Get the value to assign (may be a string — strings can be stored).
         var new_value = try self.evaluate(value_expr);
+        errdefer new_value.deinit(self.allocator);
 
         // For compound assignments the target and RHS must both be numbers.
         if (op != .assign) {
@@ -281,6 +284,9 @@ pub const Evaluator = struct {
             },
             .index => {
                 try self.storeToTarget(target, new_value);
+                // storeToTarget consumed new_value. Swap in an empty value
+                // to disarm the errdefer before the echo read can fail.
+                new_value = .{ .num = BigDec.init(self.allocator) };
                 new_value = try self.evalIndex(target.index.name, target.index.idx);
             },
             .builtin_var => |which| {
@@ -599,7 +605,9 @@ pub const Evaluator = struct {
         // Index, not pointer: nested calls push frames and the list may
         // reallocate, invalidating pointers into items.
         const my = self.frames.items.len - 1;
-        const frame = &self.frames.items[my];
+        // On any error after this point the frame must unwind: bindings
+        // installed for this call are removed and the frame is popped.
+        errdefer self.unwindFrame(my);
 
         // Reference params to copy back on exit (param name, dest name).
         var ref_params: std.ArrayList(struct { pname: []const u8, dest: []const u8 }) = .empty;
@@ -608,8 +616,12 @@ pub const Evaluator = struct {
         for (def.params, 0..) |pspec, idx| {
             switch (pspec.kind) {
                 .scalar => {
-                    const arg_val = try self.evaluate(args[idx]);
-                    try self.pushBinding(pspec.name, arg_val, &frame.saved_vals, &frame.saved_keys);
+                    var arg_val = try self.evaluate(args[idx]);
+                    const fr = &self.frames.items[my];
+                    self.pushBinding(pspec.name, arg_val, &fr.saved_vals, &fr.saved_keys) catch |e| {
+                        arg_val.deinit(self.allocator);
+                        return e;
+                    };
                 },
                 .array_copy, .array_ref => {
                     const src_name = switch (args[idx].*) {
@@ -623,20 +635,28 @@ pub const Evaluator = struct {
                         self.allocator.free(copy);
                         return error.OutOfMemory;
                     };
-                    try self.pushArrayBinding(pspec.name, copy, &frame.arr_saved, &frame.arr_keys);
+                    const fr = &self.frames.items[my];
+                    self.pushArrayBinding(pspec.name, copy, &fr.arr_saved, &fr.arr_keys) catch |e| {
+                        for (copy) |*v| v.deinit(self.allocator);
+                        self.allocator.free(copy);
+                        return e;
+                    };
                     if (pspec.kind == .array_ref) {
-                        ref_params.append(self.allocator, .{ .pname = frame.arr_keys.items[frame.arr_keys.items.len - 1], .dest = src_name }) catch return error.OutOfMemory;
+                        const fk = &self.frames.items[my].arr_keys;
+                        ref_params.append(self.allocator, .{ .pname = fk.items[fk.items.len - 1], .dest = src_name }) catch return error.OutOfMemory;
                     }
                 },
             }
         }
 
         for (def.auto_vars) |av| {
-            try self.bindAutoEntry(av, &frame.saved_vals, &frame.saved_keys, &frame.arr_saved, &frame.arr_keys);
+            const fr = &self.frames.items[my];
+            try self.bindAutoEntry(av, &fr.saved_vals, &fr.saved_keys, &fr.arr_saved, &fr.arr_keys);
         }
 
         // Execute body.
         var result: Value = .{ .num = BigDec.fromInt(self.allocator, 0) catch return error.OutOfMemory };
+        errdefer result.deinit(self.allocator);
         const f = try self.execute(def.body, self.func_stdout.?, 1, null);
         switch (f) {
             .ret => |maybe_v| {
@@ -671,29 +691,33 @@ pub const Evaluator = struct {
             }
         }
 
-        // Re-acquire the frame after execute: nested calls may have
-        // reallocated the frames list.
-        const frame2 = &self.frames.items[my];
-        var ai = frame2.arr_saved.items.len;
+        self.unwindFrame(my);
+        return result;
+    }
+
+    /// Unwind the binding frame at index `my`: remove the bindings
+    /// installed for the call, restore saved state, free the frame, pop it.
+    fn unwindFrame(self: *Self, my: usize) void {
+        const frame = &self.frames.items[my];
+        var ai = frame.arr_saved.items.len;
         while (ai > 0) {
             ai -= 1;
-            if (self.state.arrays.fetchRemove(frame2.arr_keys.items[ai])) |kv| {
+            if (self.state.arrays.fetchRemove(frame.arr_keys.items[ai])) |kv| {
                 for (kv.value) |*v| v.deinit(self.allocator);
                 if (kv.value.len > 0) self.allocator.free(kv.value);
                 self.allocator.free(kv.key);
             }
-            if (frame2.arr_saved.items[ai]) |saved_arr| {
-                self.state.arrays.put(frame2.arr_keys.items[ai], saved_arr) catch {};
-                frame2.arr_saved.items[ai] = null;
+            if (frame.arr_saved.items[ai]) |saved_arr| {
+                self.state.arrays.put(frame.arr_keys.items[ai], saved_arr) catch {};
+                frame.arr_saved.items[ai] = null;
             }
         }
-        self.popBindings(&frame2.saved_vals, &frame2.saved_keys);
-        frame2.saved_vals.deinit(self.allocator);
-        frame2.saved_keys.deinit(self.allocator);
-        frame2.arr_saved.deinit(self.allocator);
-        frame2.arr_keys.deinit(self.allocator);
+        self.popBindings(&frame.saved_vals, &frame.saved_keys);
+        frame.saved_vals.deinit(self.allocator);
+        frame.saved_keys.deinit(self.allocator);
+        frame.arr_saved.deinit(self.allocator);
+        frame.arr_keys.deinit(self.allocator);
         _ = self.frames.pop();
-        return result;
     }
 
     /// Bind one auto entry: scalar to 0, array to sizeexpr zeros.
@@ -715,10 +739,17 @@ pub const Evaluator = struct {
             if (n > MAX_ARRAY_LEN) return error.InvalidOperand;
             const slot = self.allocator.alloc(Value, n) catch return error.OutOfMemory;
             for (slot) |*v| v.* = .{ .num = BigDec.fromInt(self.allocator, 0) catch return error.OutOfMemory };
-            try self.pushArrayBinding(av.name, slot, arr_saved, arr_keys);
+            self.pushArrayBinding(av.name, slot, arr_saved, arr_keys) catch |e| {
+                for (slot) |*v| v.deinit(self.allocator);
+                self.allocator.free(slot);
+                return e;
+            };
         } else {
-            const zero = Value{ .num = BigDec.fromInt(self.allocator, 0) catch return error.OutOfMemory };
-            try self.pushBinding(av.name, zero, saved_vals, saved_keys);
+            var zero = Value{ .num = BigDec.fromInt(self.allocator, 0) catch return error.OutOfMemory };
+            self.pushBinding(av.name, zero, saved_vals, saved_keys) catch |e| {
+                zero.deinit(self.allocator);
+                return e;
+            };
         }
     }
     fn pushBinding(
@@ -899,8 +930,7 @@ pub const Evaluator = struct {
                     };
                     switch (f) {
                         .break_loop => break,
-                        .quit => return f,
-                        .halt => return f,
+                        .quit, .halt, .ret => return f,
                         else => {},
                     }
                 }
@@ -927,8 +957,7 @@ pub const Evaluator = struct {
                     };
                     switch (f) {
                         .break_loop => break,
-                        .quit => return f,
-                        .halt => return f,
+                        .quit, .halt, .ret => return f,
                         else => {},
                     }
                     if (s.update) |ue| {
@@ -1070,4 +1099,84 @@ test "Evaluator addition" {
     allocator.destroy(left_expr);
     right_num.deinit();
     allocator.destroy(right_expr);
+}
+
+test "invalid assignment frees value" {
+    const allocator = std.testing.allocator;
+
+    var state = State.init(allocator);
+    defer state.deinit();
+
+    var lexer = Lexer.init("1 = 2");
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+
+    const stmt = (try parser.parseTopLevel()).?;
+    defer {
+        stmt.deinit(allocator);
+        allocator.destroy(stmt);
+    }
+
+    var evaluator = Evaluator.init(&state);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // std.testing.allocator fails this test if evalAssignment leaks the
+    // value it built before rejecting the target.
+    try std.testing.expectError(error.InvalidAssignment, evaluator.execute(stmt, &w, 0, null));
+}
+
+test "return at top level yields ret flow" {
+    const allocator = std.testing.allocator;
+
+    var state = State.init(allocator);
+    defer state.deinit();
+
+    var lexer = Lexer.init("return 5");
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+
+    const stmt = (try parser.parseTopLevel()).?;
+    defer {
+        stmt.deinit(allocator);
+        allocator.destroy(stmt);
+    }
+
+    var evaluator = Evaluator.init(&state);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const flow = try evaluator.execute(stmt, &w, 0, null);
+    try std.testing.expect(flow == .ret);
+    if (flow.ret) |v| {
+        var vv = v;
+        vv.deinit(allocator);
+    }
+}
+
+test "return inside while returns immediately" {
+    const allocator = std.testing.allocator;
+
+    var state = State.init(allocator);
+    defer state.deinit();
+
+    var lexer = Lexer.init("while (1) { return 5 }");
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+
+    const stmt = (try parser.parseTopLevel()).?;
+    defer {
+        stmt.deinit(allocator);
+        allocator.destroy(stmt);
+    }
+
+    var evaluator = Evaluator.init(&state);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // The loop must not swallow the return: before the flow switch
+    // bubbled .ret, this spun to the iteration cap and errored.
+    const flow = try evaluator.execute(stmt, &w, 0, null);
+    try std.testing.expect(flow == .ret);
+    if (flow.ret) |v| {
+        var vv = v;
+        vv.deinit(allocator);
+    }
 }
