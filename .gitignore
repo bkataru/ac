@@ -1,0 +1,9 @@
+# Zig build cache and output
+.zig-cache/
+zig-out/
+
+# Vendored reference tree (Gavin Howard's bc/dc, has its own .git)
+bc-dc-reference/
+
+# Session transcripts saved in the project directory
+session-ses_*.md
