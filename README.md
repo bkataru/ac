@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://asciinema.org/a/iTzK2EZwmt937A65"><img src="docs/assets/ac-demo.gif" width="820" alt="ac demo: infix arithmetic, silent assignment, arrays, extras, bases, math library, multiline functions, and RPN macros"></a>
+  <a href="https://asciinema.org/a/NYwK67WZE0Wqwxh5"><img src="docs/assets/ac-demo.gif" width="820" alt="ac demo: infix arithmetic, silent assignment, arrays, extras, bases, math library, multiline functions, and RPN macros"></a>
 </p>
 
 <h1 align="center">ac</h1>
