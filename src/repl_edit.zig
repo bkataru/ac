@@ -364,6 +364,22 @@ pub const Editor = struct {
         }
         std.mem.sort([]const u8, out.items, {}, wordLess);
     }
+
+    fn redraw(self: *const Editor, stdout: *std.Io.Writer, prompt: []const u8, line: []const u8, cursor: usize) void {
+        stdout.writeAll("\r") catch {};
+        stdout.writeAll(prompt) catch {};
+        if (self.color) {
+            writeHighlighted(stdout, line);
+        } else {
+            stdout.writeAll(line) catch {};
+        }
+        stdout.writeAll("\x1b[K") catch {};
+        if (line.len > cursor) {
+            stdout.print("\x1b[{d}D", .{line.len - cursor}) catch {};
+        }
+        stdout.flush() catch {};
+    }
+
 };
 
 const builtin_words = [_][]const u8{
@@ -592,21 +608,6 @@ fn tokenBefore(line: []const u8, cursor: usize) []const u8 {
 fn replaceLine(allocator: Allocator, line: *std.ArrayList(u8), src: []const u8) void {
     line.clearRetainingCapacity();
     line.appendSlice(allocator, src) catch {};
-}
-
-fn redraw(self: *const Editor, stdout: *std.Io.Writer, prompt: []const u8, line: []const u8, cursor: usize) void {
-    stdout.writeAll("\r") catch {};
-    stdout.writeAll(prompt) catch {};
-    if (self.color) {
-        writeHighlighted(stdout, line);
-    } else {
-        stdout.writeAll(line) catch {};
-    }
-    stdout.writeAll("\x1b[K") catch {};
-    if (line.len > cursor) {
-        stdout.print("\x1b[{d}D", .{line.len - cursor}) catch {};
-    }
-    stdout.flush() catch {};
 }
 
 fn readCooked(
