@@ -625,6 +625,15 @@ pub const Evaluator = struct {
             const r = self.state.nextRand(bound);
             return .{ .num = BigDec.fromInt(self.allocator, @intCast(r)) catch return error.OutOfMemory };
         }
+        if (std.mem.eql(u8, name, "sci") or std.mem.eql(u8, name, "eng")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            var buf: [4096]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            x.formatSci(&w, self.state.scale, std.mem.eql(u8, name, "eng")) catch return error.OutOfMemory;
+            const s = self.allocator.dupe(u8, w.buffered()) catch return error.OutOfMemory;
+            return .{ .str = s };
+        }
 
         if (isMathlibName(name) and !self.state.mathlib_loaded) {
             return error.UndefinedFunction;

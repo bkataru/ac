@@ -49,7 +49,7 @@ With no files and no `-e`, `ac` starts a REPL.
 - Bases 2 to 16 for `ibase` and `obase`
 - `if`, `while`, `for`, and functions with `auto` locals and recursion
 - Arrays: `a[0] = 3`
-- Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`
+- Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`, `sci(x)`, `eng(x)`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`, `log10`, `e`, `pi()`, `j(n, x)`. `-l` also sets `scale = 20`.
 - REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`. The input line is colored.
 
@@ -63,6 +63,8 @@ Examples:
     3.14159265358979323846
     $ ac -l -e "j(0, 1)"
     0.76519768655796655144
+    $ ac -e "1.5e3"
+    1500
 
 ## RPN features
 

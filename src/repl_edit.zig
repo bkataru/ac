@@ -370,7 +370,7 @@ const builtin_words = [_][]const u8{
     "sqrt", "length", "scale", "read", "abs", "ceil", "floor", "round",
     "gcd", "lcm", "factorial", "ibase", "obase", "last",
     "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64",
-    "bshl", "bshr", "rand", "irand",
+    "bshl", "bshr", "rand", "irand", "sci", "eng",
 };
 const mathlib_words = [_][]const u8{
     "s", "c", "a", "l", "e", "pi", "j", "sin", "cos", "tan", "t",
@@ -395,7 +395,7 @@ const highlight_keywords = [_][]const u8{
     "quit", "halt", "print", "sqrt", "length", "scale", "ibase", "obase", "last", "auto",
     "abs", "ceil", "floor", "round", "gcd", "lcm", "factorial",
     "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64", "bshl", "bshr",
-    "rand", "irand", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log2", "log10", "pi",
+    "rand", "irand", "sci", "eng", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log2", "log10", "pi",
 };
 
 const Span = struct { kind: SpanKind, end: usize };
@@ -476,6 +476,23 @@ fn nextSpan(line: []const u8, start: usize) Span {
             const ok = std.ascii.isDigit(d) or d == '.' or
                 (d >= 'A' and d <= 'F') or (d >= 'a' and d <= 'f');
             if (!ok) break;
+        }
+        if (i < line.len and (line[i] == 'e' or line[i] == 'E')) {
+            var j = i + 1;
+            if (j < line.len and (line[j] == '+' or line[j] == '-')) j += 1;
+            if (j < line.len and std.ascii.isDigit(line[j])) {
+                while (j < line.len and std.ascii.isDigit(line[j])) j += 1;
+                i = j;
+            }
+        } else if (i > start and i < line.len) {
+            const prev = line[i - 1];
+            if ((prev == 'e' or prev == 'E') and (line[i] == '+' or line[i] == '-')) {
+                var j = i + 1;
+                if (j < line.len and std.ascii.isDigit(line[j])) {
+                    while (j < line.len and std.ascii.isDigit(line[j])) j += 1;
+                    i = j;
+                }
+            }
         }
         return .{ .kind = .number, .end = i };
     }
@@ -686,4 +703,6 @@ test "syntax highlighting kinds" {
     try std.testing.expectEqual(SpanKind.keyword, spanKind("define f()", 0));
     try std.testing.expectEqual(SpanKind.plain, spanKind("answer", 0));
     try std.testing.expectEqual(SpanKind.operator, spanKind("x += 1", 2));
+    try std.testing.expectEqual(SpanKind.number, spanKind("1e-2", 2));
+    try std.testing.expectEqual(SpanKind.number, spanKind("1.5e3", 4));
 }

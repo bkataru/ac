@@ -296,7 +296,41 @@ pub const Lexer = struct {
             }
         }
 
+        self.consumeExponent(start);
         return self.makeToken(.number, self.source[start..self.pos]);
+    }
+
+    /// Attach `e+3` / `e-2` when the significand already ate a trailing e/E,
+    /// or consume a fresh `e` exponent after a decimal part.
+    fn consumeExponent(self: *Self, start: usize) void {
+        if (self.isAtEnd()) return;
+        if (self.peek() == 'e' or self.peek() == 'E') {
+            const save_pos = self.pos;
+            const save_col = self.column;
+            _ = self.advance();
+            if (!self.isAtEnd() and (self.peek() == '+' or self.peek() == '-')) _ = self.advance();
+            if (!self.isAtEnd() and isDigit(self.peek())) {
+                while (!self.isAtEnd() and isDigit(self.peek())) _ = self.advance();
+                return;
+            }
+            self.pos = save_pos;
+            self.column = save_col;
+            return;
+        }
+        if (self.pos > start) {
+            const prev = self.source[self.pos - 1];
+            if ((prev == 'e' or prev == 'E') and (self.peek() == '+' or self.peek() == '-')) {
+                const save_pos = self.pos;
+                const save_col = self.column;
+                _ = self.advance();
+                if (!self.isAtEnd() and isDigit(self.peek())) {
+                    while (!self.isAtEnd() and isDigit(self.peek())) _ = self.advance();
+                    return;
+                }
+                self.pos = save_pos;
+                self.column = save_col;
+            }
+        }
     }
 
     /// Parse an identifier or keyword
@@ -419,6 +453,13 @@ test "Lexer numbers" {
     const t4 = lexer.next();
     try std.testing.expectEqual(Token.Kind.number, t4.kind);
     try std.testing.expectEqualStrings("0.123", t4.lexeme);
+}
+
+test "Lexer scientific numbers" {
+    var lexer = Lexer.init("1e3 1.5e-2 2E+4");
+    try std.testing.expectEqualStrings("1e3", lexer.next().lexeme);
+    try std.testing.expectEqualStrings("1.5e-2", lexer.next().lexeme);
+    try std.testing.expectEqualStrings("2E+4", lexer.next().lexeme);
 }
 
 test "Lexer operators" {

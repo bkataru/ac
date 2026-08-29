@@ -267,6 +267,13 @@ pub const Dc = struct {
                             sc < 'A' + self.state.ibase - 10)
                         {
                             i += 1;
+                        } else if (self.state.ibase == 10 and (sc == 'e' or sc == 'E')) {
+                            var k = i + 1;
+                            if (k < line.len and (line[k] == '+' or line[k] == '-')) k += 1;
+                            if (k < line.len and std.ascii.isDigit(line[k])) {
+                                i = k + 1;
+                                while (i < line.len and std.ascii.isDigit(line[i])) i += 1;
+                            } else break;
                         } else break;
                     }
                     var n = BigDec.parseBase(self.allocator, line[start..i], self.state.ibase, self.state.scale + 2) catch {

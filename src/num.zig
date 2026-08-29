@@ -121,6 +121,54 @@ pub const BigDec = struct {
         if (count == 0) return 0;
         return (count + BASE_DIGS - 1) / BASE_DIGS;
     }
+    fn splitSciExp(s: []const u8) ?struct { mantissa: []const u8, exp: i64 } {
+        var i = s.len;
+        while (i > 1) {
+            i -= 1;
+            const c = s[i];
+            if (c != 'e' and c != 'E') continue;
+            const rest = s[i + 1 ..];
+            if (rest.len == 0) return null;
+            const expv = std.fmt.parseInt(i64, rest, 10) catch return null;
+            const man = s[0..i];
+            if (man.len == 0) return null;
+            if (man[man.len - 1] == '.') return null;
+            return .{ .mantissa = man, .exp = expv };
+        }
+        return null;
+    }
+    fn applyDecimalExp(self: *Self, expv: i64) Error!void {
+        if (expv == 0 or self.isZero()) return;
+        const mag: i64 = if (expv < 0) -expv else expv;
+        if (mag > 1_000_000) return error.InvalidBase;
+        var ten = try fromInt(self.allocator, 10);
+        defer ten.deinit();
+        var e_bd = try fromInt(self.allocator, mag);
+        defer e_bd.deinit();
+        var p10 = Self.init(self.allocator);
+        defer p10.deinit();
+        try p10.pow(ten, e_bd, 0);
+        var out = Self.init(self.allocator);
+        errdefer out.deinit();
+        if (expv > 0) {
+            try out.mul(self.*, p10, 0);
+        } else {
+            const extra = self.fracDigitCount() + @as(usize, @intCast(mag));
+            try out.div(self.*, p10, extra);
+        }
+        const keep_neg = self.neg;
+        self.deinit();
+        self.* = out;
+        out = Self.init(self.allocator);
+        if (keep_neg and !self.isZero()) self.neg = true;
+    }
+    /// floor(log10(|n|)) for a non-zero value.
+    fn decimalExp(n: Self) i64 {
+        if (n.isZero()) return 0;
+        const sig: i64 = @intCast(n.sigDigitCount());
+        const frac: i64 = @intCast(n.fracDigitCount());
+        return sig - frac - 1;
+    }
     fn powIntBig(allocator: Allocator, base: i64, exp: usize) Error!BigDec {
         var r = try fromInt(allocator, 1);
         errdefer r.deinit();
@@ -148,6 +196,11 @@ pub const BigDec = struct {
             s = s[1..];
         } else if (s.len > 0 and s[0] == '+') {
             s = s[1..];
+        }
+        var sci_exp: i64 = 0;
+        if (splitSciExp(s)) |parts| {
+            s = parts.mantissa;
+            sci_exp = parts.exp;
         }
         const decimal_pos = std.mem.indexOfScalar(u8, s, '.');
         const int_end = decimal_pos orelse s.len;
@@ -206,6 +259,7 @@ pub const BigDec = struct {
         }
         self.len = limb_idx;
         self.normalize();
+        if (sci_exp != 0) try self.applyDecimalExp(sci_exp);
         return self;
     }
     /// Parse a bc-style literal in an arbitrary input base (2..16).
@@ -356,6 +410,45 @@ pub const BigDec = struct {
                     written += 1;
                 }
             }
+        }
+    }
+    /// Write scientific (`eng == false`) or engineering (`eng == true`) form.
+    pub fn formatSci(self: Self, writer: anytype, max_frac_digits: usize, eng: bool) !void {
+        if (self.isZero()) {
+            try writer.writeAll("0");
+            return;
+        }
+        var expv = decimalExp(self);
+        if (eng) {
+            var rem = @rem(expv, 3);
+            if (rem < 0) rem += 3;
+            expv -= rem;
+        }
+        var absv = try self.clone(self.allocator);
+        defer absv.deinit();
+        absv.neg = false;
+        var ten = try fromInt(self.allocator, 10);
+        defer ten.deinit();
+        const mag: i64 = if (expv < 0) -expv else expv;
+        var e_bd = try fromInt(self.allocator, mag);
+        defer e_bd.deinit();
+        var p10 = Self.init(self.allocator);
+        defer p10.deinit();
+        try p10.pow(ten, e_bd, 0);
+        var coeff = Self.init(self.allocator);
+        defer coeff.deinit();
+        if (expv >= 0) {
+            try coeff.div(absv, p10, max_frac_digits);
+        } else {
+            try coeff.mul(absv, p10, 0);
+        }
+        if (self.neg) try writer.writeAll("-");
+        try coeff.format(writer, 10, max_frac_digits);
+        try writer.writeAll("e");
+        if (expv < 0) {
+            try writer.print("-{d}", .{-expv});
+        } else {
+            try writer.print("{d}", .{expv});
         }
     }
     fn writeLimbPadded(writer: anytype, limb: Limb) !void {
@@ -1080,6 +1173,33 @@ test "digit counts" {
     var n = try BigDec.fromInt(a, 123);
     defer n.deinit();
     try std.testing.expectEqual(@as(usize, 3), n.sigDigitCount());
+}
+test "scientific parse and format" {
+    const a = std.testing.allocator;
+    var n = try BigDec.parse(a, "1e3", 10);
+    defer n.deinit();
+    try std.testing.expectEqual(@as(f64, 1000.0), try n.toF64());
+    var n2 = try BigDec.parse(a, "1.5e-1", 10);
+    defer n2.deinit();
+    try std.testing.expectApproxEqAbs(@as(f64, 0.15), try n2.toF64(), 1e-12);
+    var n3 = try BigDec.parse(a, "2e+2", 10);
+    defer n3.deinit();
+    try std.testing.expectEqual(@as(f64, 200.0), try n3.toF64());
+    var n4 = try BigDec.parse(a, "-1.2E3", 10);
+    defer n4.deinit();
+    try std.testing.expectEqual(@as(f64, -1200.0), try n4.toF64());
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    var thousand = try BigDec.fromInt(a, 1000);
+    defer thousand.deinit();
+    try thousand.formatSci(&w, 0, false);
+    try std.testing.expectEqualStrings("1e3", w.buffered());
+    w = .fixed(&buf);
+    var n12345 = try BigDec.fromInt(a, 12345);
+    defer n12345.deinit();
+    try n12345.formatSci(&w, 3, true);
+    try std.testing.expectEqualStrings("12.345e3", w.buffered());
 }
 test "format multi-limb integers" {
     const a = std.testing.allocator;

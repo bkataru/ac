@@ -737,7 +737,7 @@ INTERACTIVE COMMANDS:
 - [x] Bitwise operations
 - [x] Random number generation
 - [x] Modular exponentiation (dc `|`)
-- [ ] Scientific/engineering notation I/O
+- [x] Scientific/engineering notation I/O (`1.5e-3` input; `sci(x)` / `eng(x)` strings)
 - [x] Strings as bounded values (assign/print/dc stack; no arithmetic)
 
 ---

@@ -465,6 +465,7 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  band bor bxor bshl bshr
         \\  bnot8 bnot16 bnot32 bnot64
         \\  rand() irand(n)
+        \\  sci(x) eng(x)
         \\  -l: s c a l e j pi
         \\      sin cos tan atan asin acos
         \\      log log2 log10
