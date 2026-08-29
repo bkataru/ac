@@ -1641,6 +1641,25 @@ test "negative compare max min perm comb modexp" {
     }
 }
 
+test "pi(s) truncates to s places" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.mathlib_loaded = true;
+    state.scale = 20;
+    const got = try evalPrinted(&state, "pi(2)");
+    defer allocator.free(got);
+    try std.testing.expect(std.mem.startsWith(u8, got, "3.14"));
+    var i: usize = 4;
+    while (i < got.len) : (i += 1) {
+        try std.testing.expect(got[i] == '0');
+    }
+    const full = try evalPrinted(&state, "pi()");
+    defer allocator.free(full);
+    try std.testing.expect(std.mem.startsWith(u8, full, "3.14159265358979323846"));
+}
+
 test "irand stays in range" {
     const allocator = std.testing.allocator;
     var state = State.init(allocator);

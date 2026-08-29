@@ -99,9 +99,20 @@ pub fn pi(alloc: Allocator, scale: usize) !BigDec {
     defer u.deinit();
     try u.mul(a239, c4, p);
     var r = BigDec.init(alloc);
-    errdefer r.deinit();
+    defer r.deinit();
     try r.sub(t, u, p);
-    return r;
+    // Keep exactly `scale` fractional digits (no leftover guard digits).
+    var fac = try pow10(alloc, scale);
+    defer fac.deinit();
+    var scaled = BigDec.init(alloc);
+    defer scaled.deinit();
+    try scaled.mul(r, fac, 0);
+    var truncd = try truncTowardZero(alloc, scaled);
+    defer truncd.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(truncd, fac, scale);
+    return out;
 }
 
 /// e^x for any BigDec x.
