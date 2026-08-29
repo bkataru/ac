@@ -448,6 +448,7 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\      sin cos tan atan asin acos
         \\      log log2 log10
         \\  Up/Down arrows recall previous lines
+        \\  Tab completes names and :commands
         \\
     , .{ c, r, version, c, r, c, r, c, r, c, r, c, r });
 }
@@ -656,6 +657,7 @@ fn runRepl(
     defer if (ed) |e| e.disableRaw();
 
     while (true) {
+        if (ed) |e| fillCompleteWords(state, e);
         var prompt_buf: [64]u8 = undefined;
         const prompt = formatPrompt(&prompt_buf, state, false);
         if (state.interactive and ed == null) {
@@ -908,6 +910,23 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try runRepl(&state, stdout, stderr, &stdin_reader, &dc, io, &editor);
+}
+
+fn fillCompleteWords(state: *State, editor: *repl_edit.Editor) void {
+    editor.clearExtra();
+    editor.mathlib = state.mathlib_loaded;
+    var it = state.variables.iterator();
+    while (it.next()) |entry| {
+        editor.addExtra(entry.key_ptr.*) catch {};
+    }
+    var ait = state.arrays.iterator();
+    while (ait.next()) |entry| {
+        editor.addExtra(entry.key_ptr.*) catch {};
+    }
+    var fit = state.functions.iterator();
+    while (fit.next()) |entry| {
+        editor.addExtra(entry.key_ptr.*) catch {};
+    }
 }
 
 fn historyFilePath(init: std.process.Init, allocator: std.mem.Allocator) ?[]u8 {

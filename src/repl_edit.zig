@@ -18,6 +18,8 @@ pub const Editor = struct {
     win_orig: u32 = 0,
     stdin_file: ?File = null,
     io: ?Io = null,
+    extra_words: std.ArrayList([]const u8) = .empty,
+    mathlib: bool = false,
 
     pub fn init(allocator: Allocator) Editor {
         return .{ .allocator = allocator };
@@ -27,6 +29,15 @@ pub const Editor = struct {
         self.disableRaw();
         for (self.lines.items) |line| self.allocator.free(line);
         self.lines.deinit(self.allocator);
+        self.extra_words.deinit(self.allocator);
+    }
+
+    pub fn clearExtra(self: *Editor) void {
+        self.extra_words.clearRetainingCapacity();
+    }
+
+    pub fn addExtra(self: *Editor, word: []const u8) !void {
+        try self.extra_words.append(self.allocator, word);
     }
 
     pub fn add(self: *Editor, line: []const u8) !void {
@@ -225,6 +236,9 @@ pub const Editor = struct {
                     cursor = 0;
                     redraw(stdout, prompt, line.items, cursor);
                 },
+                '\t' => {
+                    self.completeToken(&line, &cursor, stdout, prompt);
+                },
                 0x1b => {
                     const n1 = stdin.takeByte() catch continue;
                     if (n1 == '[') {
@@ -301,7 +315,102 @@ pub const Editor = struct {
             else => {},
         }
     }
+
+    fn completeToken(
+        self: *Editor,
+        line: *std.ArrayList(u8),
+        cursor: *usize,
+        stdout: *std.Io.Writer,
+        prompt: []const u8,
+    ) void {
+        const prefix = tokenBefore(line.items, cursor.*);
+        if (prefix.len == 0) return;
+        var matches: std.ArrayList([]const u8) = .empty;
+        defer matches.deinit(self.allocator);
+        self.collectMatches(prefix, &matches) catch return;
+        if (matches.items.len == 0) return;
+        const shared = commonPrefix(matches.items);
+        if (shared.len > prefix.len) {
+            const rest = shared[prefix.len..];
+            for (rest) |ch| {
+                line.insert(self.allocator, cursor.*, ch) catch return;
+                cursor.* += 1;
+            }
+            redraw(stdout, prompt, line.items, cursor.*);
+            return;
+        }
+        if (matches.items.len == 1) return;
+        stdout.writeAll("\r\n") catch {};
+        for (matches.items, 0..) |m, i| {
+            if (i > 0) stdout.writeAll("  ") catch {};
+            stdout.writeAll(m) catch {};
+        }
+        stdout.writeAll("\r\n") catch {};
+        stdout.flush() catch {};
+        redraw(stdout, prompt, line.items, cursor.*);
+    }
+
+    pub fn collectMatches(self: *const Editor, prefix: []const u8, out: *std.ArrayList([]const u8)) !void {
+        if (prefix.len == 0) return;
+        if (prefix[0] == ':') {
+            for (command_words) |w| try appendMatch(self.allocator, out, w, prefix);
+        } else {
+            for (builtin_words) |w| try appendMatch(self.allocator, out, w, prefix);
+            if (self.mathlib) {
+                for (mathlib_words) |w| try appendMatch(self.allocator, out, w, prefix);
+            }
+            for (self.extra_words.items) |w| try appendMatch(self.allocator, out, w, prefix);
+        }
+        std.mem.sort([]const u8, out.items, {}, wordLess);
+    }
 };
+
+const builtin_words = [_][]const u8{
+    "sqrt", "length", "scale", "read", "abs", "ceil", "floor", "round",
+    "gcd", "lcm", "factorial", "ibase", "obase", "last",
+};
+const mathlib_words = [_][]const u8{
+    "s", "c", "a", "l", "e", "pi", "j", "sin", "cos", "tan", "t",
+    "atan", "asin", "acos", "log", "log2", "log10",
+};
+const command_words = [_][]const u8{
+    ":help", ":h", ":?", ":quit", ":q", ":rpn", ":dc", ":infix", ":bc", ":vars", ":clear",
+};
+
+fn wordLess(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+fn appendMatch(allocator: Allocator, out: *std.ArrayList([]const u8), word: []const u8, prefix: []const u8) !void {
+    if (!std.mem.startsWith(u8, word, prefix)) return;
+    for (out.items) |m| {
+        if (std.mem.eql(u8, m, word)) return;
+    }
+    try out.append(allocator, word);
+}
+
+fn commonPrefix(words: []const []const u8) []const u8 {
+    if (words.len == 0) return "";
+    var n = words[0].len;
+    for (words[1..]) |w| {
+        var i: usize = 0;
+        while (i < n and i < w.len and words[0][i] == w[i]) : (i += 1) {}
+        n = i;
+    }
+    return words[0][0..n];
+}
+
+fn tokenBefore(line: []const u8, cursor: usize) []const u8 {
+    var i = cursor;
+    while (i > 0) {
+        const c = line[i - 1];
+        const ok = std.ascii.isAlphanumeric(c) or c == '_' or c == '?';
+        if (!ok) break;
+        i -= 1;
+    }
+    if (i > 0 and line[i - 1] == ':') i -= 1;
+    return line[i..cursor];
+}
 
 fn replaceLine(allocator: Allocator, line: *std.ArrayList(u8), src: []const u8) void {
     line.clearRetainingCapacity();
@@ -357,4 +466,41 @@ test "history skips blanks and repeats" {
     try std.testing.expectEqual(@as(usize, 2), ed.lines.items.len);
     try std.testing.expectEqualStrings("1 + 2", ed.lines.items[0]);
     try std.testing.expectEqualStrings("3", ed.lines.items[1]);
+}
+
+test "tab completion matches names and commands" {
+    var ed = Editor.init(std.testing.allocator);
+    defer ed.deinit();
+    try ed.addExtra("answer");
+    try ed.addExtra("area");
+
+    var matches: std.ArrayList([]const u8) = .empty;
+    defer matches.deinit(std.testing.allocator);
+
+    try ed.collectMatches("sq", &matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
+    try std.testing.expectEqualStrings("sqrt", matches.items[0]);
+
+    matches.clearRetainingCapacity();
+    try ed.collectMatches("a", &matches);
+    try std.testing.expectEqual(@as(usize, 3), matches.items.len);
+    try std.testing.expectEqualStrings("abs", matches.items[0]);
+    try std.testing.expectEqualStrings("answer", matches.items[1]);
+    try std.testing.expectEqualStrings("area", matches.items[2]);
+
+    matches.clearRetainingCapacity();
+    try ed.collectMatches(":q", &matches);
+    try std.testing.expectEqual(@as(usize, 2), matches.items.len);
+    try std.testing.expectEqualStrings(":q", matches.items[0]);
+    try std.testing.expectEqualStrings(":quit", matches.items[1]);
+
+    ed.mathlib = true;
+    matches.clearRetainingCapacity();
+    try ed.collectMatches("as", &matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
+    try std.testing.expectEqualStrings("asin", matches.items[0]);
+
+    try std.testing.expectEqualStrings("ab", commonPrefix(&.{ "abs", "abc" }));
+    try std.testing.expectEqualStrings(":he", tokenBefore(":help", 3));
+    try std.testing.expectEqualStrings("sq", tokenBefore("1+sq", 4));
 }

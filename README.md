@@ -51,7 +51,7 @@ With no files and no `-e`, `ac` starts a REPL.
 - Arrays: `a[0] = 3`
 - Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`, `log10`, `e`, `pi()`, `j(n, x)`. `-l` also sets `scale = 20`.
-- REPL: Up/Down arrows recall previous lines. History is `~/.ac_history`.
+- REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`.
 
 Examples:
 

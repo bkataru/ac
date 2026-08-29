@@ -730,7 +730,7 @@ INTERACTIVE COMMANDS:
 - [x] ANSI color output (disabled when stdin is not a tty; --no-color)
 - [ ] Syntax highlighting
 - [x] Line editing with history (`~/.ac_history`; arrows, backspace)
-- [ ] Tab completion
+- [x] Tab completion
 - [x] Better error messages with context (caret diagnostics)
 
 ### Phase 6: Extensions
