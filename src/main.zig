@@ -104,11 +104,38 @@ pub const State = struct {
     }
 };
 
+/// Human-readable text for an error. Falls back to the Zig error name.
+fn errorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ExpectedExpression => "expected an expression",
+        error.ExpectedLeftParen => "expected '('",
+        error.ExpectedRightParen => "expected ')'",
+        error.UndefinedVariable => "undefined variable",
+        error.UndefinedFunction => "undefined function",
+        error.WrongArgCount => "wrong number of arguments",
+        error.InvalidAssignment => "invalid assignment target",
+        error.InvalidBreak => "break outside a loop",
+        error.InvalidContinue => "continue outside a loop",
+        error.InvalidReturn => "return outside a function",
+        error.DivisionByZero => "division by zero",
+        error.NegativeSquareRoot => "square root of a negative number",
+        error.NonIntegerExponent => "exponent must be an integer",
+        error.InternalDivisionOverflow => "internal division overflow",
+        error.InvalidOperand => "invalid operand",
+        error.InvalidBase => "invalid base",
+        error.StackEmpty => "stack is empty",
+        error.UnexpectedToken => "unexpected token",
+        error.WriteFailed => "write failed",
+        error.OutOfMemory => "out of memory",
+        else => @errorName(err),
+    };
+}
+
 fn printError(state: *State, stdout: anytype, err: anyerror) !void {
     if (state.color_enabled) {
-        try stdout.print("{s}Error: {s}{s}\n", .{ Color.err, @errorName(err), Color.reset });
+        try stdout.print("{s}Error: {s}{s}\n", .{ Color.err, errorMessage(err), Color.reset });
     } else {
-        try stdout.print("Error: {s}\n", .{@errorName(err)});
+        try stdout.print("Error: {s}\n", .{errorMessage(err)});
     }
 }
 
@@ -116,9 +143,9 @@ fn printError(state: *State, stdout: anytype, err: anyerror) !void {
 /// the offending source line.
 fn printErrorCaret(state: *State, stdout: anytype, err: anyerror, source_line: []const u8, col: u32) !void {
     if (state.color_enabled) {
-        try stdout.print("{s}Error: {s}{s}\n", .{ Color.err, @errorName(err), Color.reset });
+        try stdout.print("{s}Error: {s}{s}\n", .{ Color.err, errorMessage(err), Color.reset });
     } else {
-        try stdout.print("Error: {s}\n", .{@errorName(err)});
+        try stdout.print("Error: {s}\n", .{errorMessage(err)});
     }
     try stdout.writeAll(source_line);
     try stdout.writeAll("\n");
@@ -224,6 +251,15 @@ fn runStatement(
     switch (flow) {
         .quit => return false,
         .halt => return false,
+        .ret => |maybe_v| {
+            // Return outside a function: free the payload, report it.
+            if (maybe_v) |v| {
+                var vv = v;
+                vv.deinit(state.allocator);
+            }
+            try printError(state, stdout, error.InvalidReturn);
+            return true;
+        },
         else => {},
     }
 
@@ -432,6 +468,92 @@ const CliAction = union(enum) {
     stdin,
 };
 
+/// Read one physical line into buf (through LF, CR dropped so CRLF and
+/// LF input behave the same). Returns the byte count; sets `eof_out`
+/// when the stream ended (a partial final line still counts).
+fn readPhysicalLine(
+    stdin: *std.Io.Reader,
+    buf: []u8,
+    eof_out: *bool,
+    stderr: *std.Io.Writer,
+) usize {
+    var n: usize = 0;
+    while (true) {
+        const ch = stdin.takeByte() catch |err| {
+            if (err != error.EndOfStream) {
+                stderr.print("Read error: {s}\n", .{@errorName(err)}) catch {};
+                stderr.flush() catch {};
+            } else {
+                eof_out.* = true;
+            }
+            break;
+        };
+        if (ch == '\r') continue;
+        if (ch == '\n') break;
+        if (n < buf.len) {
+            buf[n] = ch;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// Read one logical line: a physical line spliced with the next one when
+/// it ends with a backslash (bc-style). Chained backslashes splice again.
+fn readInputLine(
+    stdin: *std.Io.Reader,
+    buf: []u8,
+    eof_out: *bool,
+    stderr: *std.Io.Writer,
+) usize {
+    var line_len = readPhysicalLine(stdin, buf, eof_out, stderr);
+    while (line_len >= 1 and buf[line_len - 1] == '\\' and !eof_out.*) {
+        line_len -= 1; // drop the backslash
+        const part = readPhysicalLine(stdin, buf[line_len..], eof_out, stderr);
+        line_len += part;
+        if (eof_out.* and part == 0) break;
+    }
+    return line_len;
+}
+
+/// Net { } depth of a source fragment. Ignores braces inside block
+/// comments, line comments, and dc-style [ ... ] strings, mirroring the
+/// lexer (lex.zig string/blockComment/lineComment).
+fn netBraceDepth(src: []const u8) i32 {
+    var depth: i32 = 0;
+    var bracket: i32 = 0;
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const ch = src[i];
+        if (bracket > 0) {
+            // Inside a dc [ ... ] string: only nesting brackets matter.
+            if (ch == '[') bracket += 1;
+            if (ch == ']') bracket -= 1;
+            continue;
+        }
+        switch (ch) {
+            '/' => {
+                if (i + 1 < src.len and src[i + 1] == '*') {
+                    // Block comment: skip past the closing */.
+                    i += 2;
+                    while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) : (i += 1) {}
+                    if (i + 1 < src.len) i += 1;
+                }
+            },
+            '#' => {
+                // Line comment: skip to the end of the line.
+                while (i < src.len and src[i] != '\n') : (i += 1) {}
+            },
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            else => {},
+        }
+    }
+    return depth;
+}
+
 fn runRepl(
     state: *State,
     stdout: *std.Io.Writer,
@@ -452,62 +574,67 @@ fn runRepl(
             try stdout.flush();
         }
 
-        // Read line byte-by-byte.
-        // Note: takeDelimiterExclusive spins forever on EOF with this Zig
-        // 0.16 build (Windows pipe path), so we detect end-of-stream via
-        // takeByte instead.
+        // Read one logical line (spliced on trailing backslashes).
         var line_buf: [4096]u8 = undefined;
-        var line_len: usize = 0;
         var hit_eof = false;
-        while (true) {
-            const ch = stdin.takeByte() catch |err| switch (err) {
-                error.EndOfStream => {
-                    hit_eof = true;
-                    break;
-                },
-                else => {
-                    try stderr.print("Read error: {s}\n", .{@errorName(err)});
+        const line_len = readInputLine(stdin, &line_buf, &hit_eof, stderr);
+
+        // Multiline defines: accumulate lines while braces stay unbalanced.
+        // dc mode has no brace syntax, so no accumulation there.
+        var acc: std.ArrayList(u8) = .empty;
+        defer acc.deinit(state.allocator);
+        try acc.appendSlice(state.allocator, line_buf[0..line_len]);
+        var aborted = false;
+        while (state.mode == .infix and netBraceDepth(acc.items) > 0) {
+            if (state.interactive) {
+                if (state.color_enabled) {
+                    try stdout.print("{s}..>{s} ", .{ Color.prompt, Color.reset });
+                } else {
+                    try stdout.writeAll("..> ");
+                }
+                try stdout.flush();
+            }
+            var cont_buf: [4096]u8 = undefined;
+            var cont_eof = false;
+            const cont_len = readInputLine(stdin, &cont_buf, &cont_eof, stderr);
+            if (cont_len == 0 and cont_eof) {
+                // Stream ended mid-define: discard and exit.
+                acc.clearRetainingCapacity();
+                hit_eof = true;
+                break;
+            }
+            const cont_line = cont_buf[0..cont_len];
+            const cont_trimmed = std.mem.trim(u8, cont_line, " \t");
+            if (cont_trimmed.len > 0 and cont_trimmed[0] == ':') {
+                // Meta command while defining: discard the partial define
+                // and run the command on its own.
+                acc.clearRetainingCapacity();
+                aborted = true;
+                var keep = true;
+                if (processLine(state, cont_line, stdout, dc)) |k| {
+                    keep = k;
+                } else |err| {
+                    try stderr.print("Error: {s}\n", .{errorMessage(err)});
                     try stderr.flush();
-                    break;
-                },
-            };
-            if (ch == '\n') break;
-            if (line_len < line_buf.len) {
-                line_buf[line_len] = ch;
-                line_len += 1;
-            }
-        }
-
-        // bc-style line continuation: a trailing backslash splices the
-        // next input line onto this one before parsing.
-        while (line_len >= 1 and line_buf[line_len - 1] == '\\' and !hit_eof) {
-            line_len -= 1; // drop the backslash
-            var ch2: u8 = 0;
-            var got = false;
-            while (true) {
-                ch2 = stdin.takeByte() catch break;
-                got = true;
-                if (ch2 == '\n') break;
-                if (line_len < line_buf.len) {
-                    line_buf[line_len] = ch2;
-                    line_len += 1;
                 }
+                try stdout.flush();
+                if (!keep) return;
+                break;
             }
-            if (!got) break;
-            while (true) {
-                const c3 = stdin.takeByte() catch break;
-                if (c3 == '\n') break;
-                if (line_len < line_buf.len) {
-                    line_buf[line_len] = c3;
-                    line_len += 1;
-                }
+            if (acc.items.len + cont_len + 1 > max_source_bytes) {
+                try stderr.writeAll("Error: input too long\n");
+                try stderr.flush();
+                acc.clearRetainingCapacity();
+                aborted = true;
+                break;
             }
-            break;
+            try acc.append(state.allocator, '\n');
+            try acc.appendSlice(state.allocator, cont_line);
         }
-        if (hit_eof and line_len == 0) break;
+        if (hit_eof and acc.items.len == 0) break;
 
-        const continue_loop = processLine(state, line_buf[0..line_len], stdout, dc) catch |err| {
-            try stderr.print("Error: {s}\n", .{@errorName(err)});
+        const continue_loop = if (aborted) true else processLine(state, acc.items, stdout, dc) catch |err| {
+            try stderr.print("Error: {s}\n", .{errorMessage(err)});
             try stderr.flush();
             continue;
         };
@@ -691,4 +818,17 @@ test "basic sanity" {
     _ = @import("eval.zig");
     _ = @import("mathlib.zig");
     _ = @import("dc.zig");
+}
+
+test "brace depth scanner" {
+    try std.testing.expectEqual(@as(i32, 1), netBraceDepth("define f() {"));
+    try std.testing.expectEqual(@as(i32, -1), netBraceDepth("x }"));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth("{ }"));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth("/* { */"));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth("# { tail"));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth("[{,}]"));
+    try std.testing.expectEqual(@as(i32, 1), netBraceDepth("[2 3 +] { "));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth(""));
+    try std.testing.expectEqual(@as(i32, 1), netBraceDepth("a[0] = {"));
+    try std.testing.expectEqual(@as(i32, 0), netBraceDepth("{ /* } */ }"));
 }

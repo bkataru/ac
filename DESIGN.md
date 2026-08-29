@@ -498,7 +498,7 @@ pub const dc_commands = std.StaticStringMap(DcAction).initComptime(.{
 
 **IMPORTANT**: Zig 0.16.0 uses the new "Writergate" I/O APIs. Buffers are in the interface, not the implementation.
 
-The shipped REPL reads stdin byte-by-byte with `takeByte` (Zig 0.16 Windows EOF workaround). Do not switch it to `takeDelimiterExclusive`.
+The shipped REPL reads stdin byte-by-byte with `takeByte` (Zig 0.16 Windows EOF workaround). Do not switch it to `takeDelimiterExclusive`. In infix mode, the REPL joins lines while `{` / `}` stay unbalanced (skipping braces inside comments and `[...]` strings) and prints a `..>` continuation prompt. A trailing `\` splices the next line. Meta commands that start with `:` abort a partial define.
 
 ```zig
 const std = @import("std");
