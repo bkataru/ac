@@ -48,7 +48,7 @@ With no files and no `-e`, `ac` starts a REPL.
 - Variables: `x = 3` (the assignment does not print), and the special variables `scale`, `ibase`, `obase`
 - Bases 2 to 16 for `ibase` and `obase`
 - `if`, `while`, `for`, and functions with `auto` locals and recursion
-- Arrays: `a[0] = 3`
+- Arrays: `a[0] = 3`. A bare name prints the array as `[3, 4]`.
 - Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`, `sci(x)`, `eng(x)`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`, `log10`, `e`, `pi()`, `j(n, x)`. `-l` also sets `scale = 20`.
 - REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`. The input line is colored.
