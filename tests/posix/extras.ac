@@ -14,7 +14,19 @@ bnot8(0)
 bnot8(1)
 bshl(1, 8)
 bshr(256, 8)
+max(2, 9)
+min(2, 9)
+max(-3, -1)
+min(-3, -1)
+perm(5, 2)
+comb(10, 3)
+f(5)
+cbrt(8)
+root(16, 4)
+modexp(2, 10, 17)
 scale = 2
 1e3
 1.5e-1
 2e+2
+r(1.231, 2)
+ceil(1.231, 2)

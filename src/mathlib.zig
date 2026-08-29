@@ -1,6 +1,7 @@
 //! bc -l math library: pi, ln, exp, sin, cos, atan, Bessel j(n,x),
 //! plus extras (tan, asin, acos, log*) and always-on helpers
-//! (abs, ceil, floor, round, gcd, lcm, factorial, bitwise).
+//! (abs, ceil, floor, round, gcd, lcm, factorial, perm, comb,
+//! max, min, root, cbrt, modexp, bitwise).
 //!
 //! All series are evaluated at internal precision p = scale + GUARD
 //! digits; final results are truncated to `scale`. Terms iterate with
@@ -828,6 +829,204 @@ pub fn factorial(alloc: Allocator, n: BigDec) !BigDec {
     return acc;
 }
 
+fn asNonNegUsize(x: BigDec, cap: usize) !usize {
+    if (x.fracDigitCount() != 0 or isNeg(x)) return error.InvalidOperand;
+    const f = x.toF64() catch return error.InvalidOperand;
+    if (!std.math.isFinite(f) or @floor(f) != f) return error.InvalidOperand;
+    if (f > @as(f64, @floatFromInt(cap))) return error.InvalidOperand;
+    return @intFromFloat(f);
+}
+
+fn pow10(alloc: Allocator, places: usize) !BigDec {
+    var ten = try BigDec.fromInt(alloc, 10);
+    defer ten.deinit();
+    var pexp = try BigDec.fromInt(alloc, @as(i64, @intCast(places)));
+    defer pexp.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.pow(ten, pexp, 0);
+    return out;
+}
+
+/// Round x to `places` digits after the point (halves away from zero).
+pub fn roundPlaces(alloc: Allocator, x: BigDec, places: BigDec) !BigDec {
+    const p = try asNonNegUsize(places, 100000);
+    if (p == 0) return round(alloc, x);
+    var fac = try pow10(alloc, p);
+    defer fac.deinit();
+    var scaled = BigDec.init(alloc);
+    defer scaled.deinit();
+    try scaled.mul(x, fac, 0);
+    var r = try round(alloc, scaled);
+    defer r.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(r, fac, p);
+    return out;
+}
+
+/// Least value with `places` digits after the point that is ≥ x.
+pub fn ceilPlaces(alloc: Allocator, x: BigDec, places: BigDec) !BigDec {
+    const p = try asNonNegUsize(places, 100000);
+    if (p == 0) return ceil(alloc, x);
+    var fac = try pow10(alloc, p);
+    defer fac.deinit();
+    var scaled = BigDec.init(alloc);
+    defer scaled.deinit();
+    try scaled.mul(x, fac, 0);
+    var c = try ceil(alloc, scaled);
+    defer c.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(c, fac, p);
+    return out;
+}
+
+/// nPk = n·(n-1)·…·(n-k+1) for integers 0 ≤ k ≤ n ≤ 1000.
+pub fn perm(alloc: Allocator, n: BigDec, k: BigDec) !BigDec {
+    const nn = try asNonNegUsize(n, 1000);
+    const kk = try asNonNegUsize(k, 1000);
+    if (kk > nn) return error.InvalidOperand;
+    var acc = try BigDec.fromInt(alloc, 1);
+    errdefer acc.deinit();
+    var i: usize = 0;
+    while (i < kk) : (i += 1) {
+        var term = try BigDec.fromInt(alloc, @as(i64, @intCast(nn - i)));
+        defer term.deinit();
+        var next = BigDec.init(alloc);
+        errdefer next.deinit();
+        try next.mul(acc, term, 0);
+        acc.deinit();
+        acc = next;
+    }
+    return acc;
+}
+
+/// nCk for integers 0 ≤ k ≤ n ≤ 1000.
+pub fn comb(alloc: Allocator, n: BigDec, k: BigDec) !BigDec {
+    const nn = try asNonNegUsize(n, 1000);
+    var kk = try asNonNegUsize(k, 1000);
+    if (kk > nn) return error.InvalidOperand;
+    if (kk > nn - kk) kk = nn - kk;
+    var acc = try BigDec.fromInt(alloc, 1);
+    errdefer acc.deinit();
+    var i: usize = 0;
+    while (i < kk) : (i += 1) {
+        var numf = try BigDec.fromInt(alloc, @as(i64, @intCast(nn - kk + 1 + i)));
+        defer numf.deinit();
+        var next = BigDec.init(alloc);
+        errdefer next.deinit();
+        try next.mul(acc, numf, 0);
+        acc.deinit();
+        acc = next;
+        var den = try BigDec.fromInt(alloc, @as(i64, @intCast(i + 1)));
+        defer den.deinit();
+        var q = BigDec.init(alloc);
+        errdefer q.deinit();
+        try q.div(acc, den, 0);
+        acc.deinit();
+        acc = q;
+    }
+    return acc;
+}
+
+pub fn maxVal(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    if (BigDec.cmp(a, b) == .lt) return b.clone(alloc);
+    return a.clone(alloc);
+}
+
+pub fn minVal(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    if (BigDec.cmp(a, b) == .gt) return b.clone(alloc);
+    return a.clone(alloc);
+}
+
+/// Integer nth root of x, truncated to `scale`. Even n rejects x < 0.
+pub fn nthRoot(alloc: Allocator, x: BigDec, n: BigDec, scale: usize) !BigDec {
+    const ni64: i64 = blk: {
+        const nu = try asNonNegUsize(n, 10000);
+        if (nu == 0) return error.InvalidOperand;
+        break :blk @intCast(nu);
+    };
+    if (ni64 == 1) {
+        var one = try BigDec.fromInt(alloc, 1);
+        defer one.deinit();
+        var out = BigDec.init(alloc);
+        errdefer out.deinit();
+        try out.div(x, one, scale);
+        return out;
+    }
+    const neg = isNeg(x);
+    if (neg and @mod(ni64, 2) == 0) return error.NegativeSquareRoot;
+    var ax = try absOf(alloc, x);
+    defer ax.deinit();
+    if (ax.isZero()) return BigDec.fromInt(alloc, 0);
+    if (ni64 == 2) {
+        var out = BigDec.init(alloc);
+        errdefer out.deinit();
+        try out.sqrt(ax, scale);
+        return out;
+    }
+
+    const p = prec(scale);
+    const xf = ax.toF64() catch 1.0;
+    const nf: f64 = @floatFromInt(ni64);
+    var guess_f = if (std.math.isFinite(xf) and xf > 0)
+        std.math.pow(f64, xf, 1.0 / nf)
+    else
+        1.0;
+    if (!std.math.isFinite(guess_f) or guess_f <= 0) guess_f = 1.0;
+
+    var y = try BigDec.fromF64(alloc, guess_f, p);
+    defer y.deinit();
+    if (y.isZero()) {
+        y.deinit();
+        y = try BigDec.fromInt(alloc, 1);
+    }
+    var n_bd = try BigDec.fromInt(alloc, ni64);
+    defer n_bd.deinit();
+    var nm1 = try BigDec.fromInt(alloc, ni64 - 1);
+    defer nm1.deinit();
+
+    var it: usize = 0;
+    while (it < 12) : (it += 1) {
+        var ypow = BigDec.init(alloc);
+        defer ypow.deinit();
+        try ypow.pow(y, nm1, p);
+        if (ypow.isZero()) break;
+        var quot = BigDec.init(alloc);
+        defer quot.deinit();
+        try quot.div(ax, ypow, p);
+        var ny = BigDec.init(alloc);
+        defer ny.deinit();
+        try ny.mul(nm1, y, 0);
+        var sum = BigDec.init(alloc);
+        defer sum.deinit();
+        try sum.add(ny, quot, p);
+        var ynew = BigDec.init(alloc);
+        errdefer ynew.deinit();
+        try ynew.div(sum, n_bd, p);
+        const done = BigDec.cmp(ynew, y) == .eq;
+        y.deinit();
+        y = ynew;
+        ynew = BigDec.init(alloc);
+        if (done) break;
+    }
+
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(y, one, scale);
+    if (neg and !out.isZero()) out.neg = true;
+    return out;
+}
+
+pub fn cbrt(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    var three = try BigDec.fromInt(alloc, 3);
+    defer three.deinit();
+    return nthRoot(alloc, x, three, scale);
+}
+
 
 const max_bit_len: usize = 1_000_000;
 
@@ -1241,6 +1440,69 @@ test "abs ceil floor round gcd lcm factorial" {
     var fact = try factorial(alloc, ten);
     defer fact.deinit();
     try expectFmt(fact, 0, "3628800");
+}
+
+test "perm comb max min roundPlaces ceilPlaces root cbrt" {
+    const alloc = std.testing.allocator;
+
+    var five = try BigDec.fromInt(alloc, 5);
+    defer five.deinit();
+    var two = try BigDec.fromInt(alloc, 2);
+    defer two.deinit();
+    var pe = try perm(alloc, five, two);
+    defer pe.deinit();
+    try expectFmt(pe, 0, "20");
+
+    var ten = try BigDec.fromInt(alloc, 10);
+    defer ten.deinit();
+    var three = try BigDec.fromInt(alloc, 3);
+    defer three.deinit();
+    var co = try comb(alloc, ten, three);
+    defer co.deinit();
+    try expectFmt(co, 0, "120");
+
+    var neg3 = try BigDec.fromInt(alloc, -3);
+    defer neg3.deinit();
+    var neg1 = try BigDec.fromInt(alloc, -1);
+    defer neg1.deinit();
+    var mx = try maxVal(alloc, neg3, neg1);
+    defer mx.deinit();
+    try expectFmt(mx, 0, "-1");
+    var mn = try minVal(alloc, neg3, neg1);
+    defer mn.deinit();
+    try expectFmt(mn, 0, "-3");
+
+    var x = try BigDec.parse(alloc, "1.231", 10);
+    defer x.deinit();
+    var rp = try roundPlaces(alloc, x, two);
+    defer rp.deinit();
+    try expectFmt(rp, 2, "1.23");
+    var cp = try ceilPlaces(alloc, x, two);
+    defer cp.deinit();
+    try expectFmt(cp, 2, "1.24");
+
+    var eight = try BigDec.fromInt(alloc, 8);
+    defer eight.deinit();
+    var cb = try cbrt(alloc, eight, 0);
+    defer cb.deinit();
+    try expectFmt(cb, 0, "2");
+    var n8 = try BigDec.fromInt(alloc, -8);
+    defer n8.deinit();
+    var cbn = try cbrt(alloc, n8, 0);
+    defer cbn.deinit();
+    try expectFmt(cbn, 0, "-2");
+
+    var sixteen = try BigDec.fromInt(alloc, 16);
+    defer sixteen.deinit();
+    var four = try BigDec.fromInt(alloc, 4);
+    defer four.deinit();
+    var rt = try nthRoot(alloc, sixteen, four, 0);
+    defer rt.deinit();
+    try expectFmt(rt, 0, "2");
+
+    var p2 = try pi(alloc, 2);
+    defer p2.deinit();
+    try expectFmt(p2, 2, "3.14");
 }
 
 test "log2 log10 tan asin acos" {

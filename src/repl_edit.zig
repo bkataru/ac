@@ -383,14 +383,15 @@ pub const Editor = struct {
 };
 
 const builtin_words = [_][]const u8{
-    "sqrt", "length", "scale", "read", "abs", "ceil", "floor", "round",
-    "gcd", "lcm", "factorial", "ibase", "obase", "last",
+    "sqrt", "length", "scale", "read", "abs", "ceil", "floor", "round", "r",
+    "gcd", "lcm", "factorial", "f", "perm", "comb", "max", "min", "root", "cbrt",
+    "modexp", "ibase", "obase", "last",
     "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64",
     "bshl", "bshr", "rand", "irand", "sci", "eng",
 };
 const mathlib_words = [_][]const u8{
     "s", "c", "a", "l", "e", "pi", "j", "sin", "cos", "tan", "t",
-    "atan", "asin", "acos", "log", "log2", "log10",
+    "atan", "asin", "acos", "log", "log2", "log10", "l2", "l10",
 };
 const command_words = [_][]const u8{
     ":help", ":h", ":?", ":quit", ":q", ":rpn", ":dc", ":infix", ":bc", ":vars", ":funcs", ":clear",
@@ -409,7 +410,7 @@ const ansi_string = "\x1b[32m";
 const highlight_keywords = [_][]const u8{
     "if", "else", "while", "for", "define", "return", "break", "continue",
     "quit", "halt", "print", "sqrt", "length", "scale", "ibase", "obase", "last", "auto",
-    "abs", "ceil", "floor", "round", "gcd", "lcm", "factorial",
+    "abs", "ceil", "floor", "round", "gcd", "lcm", "factorial", "perm", "comb", "max", "min", "root", "cbrt", "modexp",
     "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64", "bshl", "bshr",
     "rand", "irand", "sci", "eng", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log2", "log10", "pi",
 };

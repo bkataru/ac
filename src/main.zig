@@ -484,15 +484,16 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  ibase             Input base (default: 10)
         \\  obase             Output base (default: 10)
         \\  sqrt(x)           Square root
-        \\  abs ceil floor round
-        \\  gcd lcm factorial
+        \\  abs ceil floor round r
+        \\  gcd lcm factorial f perm comb
+        \\  max min root cbrt modexp
         \\  band bor bxor bshl bshr
         \\  bnot8 bnot16 bnot32 bnot64
         \\  rand() irand(n)
         \\  sci(x) eng(x)
         \\  -l: s c a l e j pi
         \\      sin cos tan atan asin acos
-        \\      log log2 log10
+        \\      log log2 log10 l2 l10
         \\  Up/Down arrows recall previous lines
         \\  Tab completes names and :commands
         \\  The input line is colored

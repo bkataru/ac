@@ -571,6 +571,11 @@ pub const Evaluator = struct {
             return .{ .num = n };
         }
 
+        // A user define hides an extra of the same name (`f`, `r`, …).
+        if (self.state.functions.get(name) != null) {
+            return self.callFunction(name, args);
+        }
+
         if (std.mem.eql(u8, name, "abs")) {
             var x = try self.evalOneNum(args);
             defer x.deinit();
@@ -582,14 +587,32 @@ pub const Evaluator = struct {
             return .{ .num = mathlib.floor(self.allocator, x) catch return error.OutOfMemory };
         }
         if (std.mem.eql(u8, name, "ceil")) {
-            var x = try self.evalOneNum(args);
-            defer x.deinit();
-            return .{ .num = mathlib.ceil(self.allocator, x) catch return error.OutOfMemory };
+            if (args.len == 1) {
+                var x = try self.evalOneNum(args);
+                defer x.deinit();
+                return .{ .num = mathlib.ceil(self.allocator, x) catch return error.OutOfMemory };
+            }
+            if (args.len == 2) {
+                var pair = try self.evalTwoNum(args);
+                defer pair.a.deinit();
+                defer pair.b.deinit();
+                return .{ .num = mathlib.ceilPlaces(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+            }
+            return error.WrongArgCount;
         }
-        if (std.mem.eql(u8, name, "round")) {
-            var x = try self.evalOneNum(args);
-            defer x.deinit();
-            return .{ .num = mathlib.round(self.allocator, x) catch return error.OutOfMemory };
+        if (std.mem.eql(u8, name, "round") or std.mem.eql(u8, name, "r")) {
+            if (args.len == 1) {
+                var x = try self.evalOneNum(args);
+                defer x.deinit();
+                return .{ .num = mathlib.round(self.allocator, x) catch return error.OutOfMemory };
+            }
+            if (args.len == 2) {
+                var pair = try self.evalTwoNum(args);
+                defer pair.a.deinit();
+                defer pair.b.deinit();
+                return .{ .num = mathlib.roundPlaces(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+            }
+            return error.WrongArgCount;
         }
         if (std.mem.eql(u8, name, "gcd")) {
             var pair = try self.evalTwoNum(args);
@@ -603,10 +626,55 @@ pub const Evaluator = struct {
             defer pair.b.deinit();
             return .{ .num = mathlib.lcm(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
         }
-        if (std.mem.eql(u8, name, "factorial")) {
+        if (std.mem.eql(u8, name, "factorial") or std.mem.eql(u8, name, "f")) {
             var x = try self.evalOneNum(args);
             defer x.deinit();
             return .{ .num = mathlib.factorial(self.allocator, x) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "perm")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.perm(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "comb")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.comb(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "max")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.maxVal(self.allocator, pair.a, pair.b) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "min")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.minVal(self.allocator, pair.a, pair.b) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "root")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.nthRoot(self.allocator, pair.a, pair.b, self.state.scale) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "cbrt")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.cbrt(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "modexp")) {
+            var t = try self.evalThreeNum(args);
+            defer t.a.deinit();
+            defer t.b.deinit();
+            defer t.c.deinit();
+            var result = BigDec.init(self.allocator);
+            errdefer result.deinit();
+            result.modexp(t.a, t.b, t.c) catch |err| return mapMath(err);
+            return .{ .num = result };
         }
         if (std.mem.eql(u8, name, "band")) {
             var pair = try self.evalTwoNum(args);
@@ -689,8 +757,16 @@ pub const Evaluator = struct {
         }
 
         if (std.mem.eql(u8, name, "pi")) {
-            if (args.len != 0) return error.WrongArgCount;
-            return .{ .num = mathlib.pi(self.allocator, self.state.scale) catch return error.OutOfMemory };
+            if (args.len == 0) {
+                return .{ .num = mathlib.pi(self.allocator, self.state.scale) catch return error.OutOfMemory };
+            }
+            if (args.len == 1) {
+                var x = try self.evalOneNum(args);
+                defer x.deinit();
+                const places = mathlibPiPlaces(x) catch |err| return mapMath(err);
+                return .{ .num = mathlib.pi(self.allocator, places) catch return error.OutOfMemory };
+            }
+            return error.WrongArgCount;
         }
         if (std.mem.eql(u8, name, "e")) {
             var x = try self.evalOneNum(args);
@@ -709,12 +785,12 @@ pub const Evaluator = struct {
             return .{ .num = mathlib.logBase(self.allocator, pair.a, pair.b, self.state.scale) catch |err| return mapMath(err) };
         }
         if (std.mem.eql(u8, name, "log")) return error.WrongArgCount;
-        if (std.mem.eql(u8, name, "log2")) {
+        if (std.mem.eql(u8, name, "log2") or std.mem.eql(u8, name, "l2")) {
             var x = try self.evalOneNum(args);
             defer x.deinit();
             return .{ .num = mathlib.log2(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
         }
-        if (std.mem.eql(u8, name, "log10")) {
+        if (std.mem.eql(u8, name, "log10") or std.mem.eql(u8, name, "l10")) {
             var x = try self.evalOneNum(args);
             defer x.deinit();
             return .{ .num = mathlib.log10(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
@@ -768,6 +844,42 @@ pub const Evaluator = struct {
         return n.clone(self.allocator) catch return error.OutOfMemory;
     }
 
+    fn evalThreeNum(self: *Self, args: []const *Expr) EvalError!struct { a: BigDec, b: BigDec, c: BigDec } {
+        if (args.len != 3) return error.WrongArgCount;
+        var av = try self.evaluate(args[0]);
+        errdefer av.deinit(self.allocator);
+        var bv = try self.evaluate(args[1]);
+        errdefer bv.deinit(self.allocator);
+        var cv = try self.evaluate(args[2]);
+        defer cv.deinit(self.allocator);
+        const an = av.asNum() orelse return error.InvalidOperand;
+        const bn = bv.asNum() orelse return error.InvalidOperand;
+        const cn = cv.asNum() orelse return error.InvalidOperand;
+        const a = an.clone(self.allocator) catch return error.OutOfMemory;
+        errdefer {
+            var tmp = a;
+            tmp.deinit();
+        }
+        const b = bn.clone(self.allocator) catch return error.OutOfMemory;
+        errdefer {
+            var tmp = b;
+            tmp.deinit();
+        }
+        const c = cn.clone(self.allocator) catch return error.OutOfMemory;
+        av.deinit(self.allocator);
+        av = .{ .num = BigDec.init(self.allocator) };
+        bv.deinit(self.allocator);
+        bv = .{ .num = BigDec.init(self.allocator) };
+        return .{ .a = a, .b = b, .c = c };
+    }
+
+    fn mathlibPiPlaces(x: BigDec) EvalError!usize {
+        if (x.fracDigitCount() != 0 or x.neg) return error.InvalidOperand;
+        const f = x.toF64() catch return error.InvalidOperand;
+        if (!std.math.isFinite(f) or f > 100000 or @floor(f) != f) return error.InvalidOperand;
+        return @intFromFloat(f);
+    }
+
     fn evalTwoNum(self: *Self, args: []const *Expr) EvalError!struct { a: BigDec, b: BigDec } {
         if (args.len != 2) return error.WrongArgCount;
         var av = try self.evaluate(args[0]);
@@ -799,11 +911,13 @@ pub const Evaluator = struct {
 
     fn isExtraName(name: []const u8) bool {
         const names = [_][]const u8{
-            "abs",   "ceil",  "floor", "round", "gcd",   "lcm",   "factorial",
+            "abs",   "ceil",  "floor", "round", "r",     "gcd",   "lcm",
+            "factorial", "f", "perm",  "comb",  "max",   "min",   "root",
+            "cbrt",  "modexp",
             "band",  "bor",   "bxor",  "bshl",  "bshr",  "bnot8", "bnot16",
             "bnot32", "bnot64", "rand", "irand", "sci",   "eng",   "pi",
             "sin",   "cos",   "tan",   "t",     "atan",  "asin",  "acos",
-            "log",   "log2",  "log10",
+            "log",   "log2",  "log10", "l2",    "l10",
         };
         for (names) |n| {
             if (std.mem.eql(u8, name, n)) return true;
@@ -813,6 +927,7 @@ pub const Evaluator = struct {
 
     fn gateExtra(self: *Self, name: []const u8) EvalError!void {
         if (!isExtraName(name)) return;
+        if (self.state.functions.get(name) != null) return;
         if (self.state.standard) return error.UndefinedFunction;
         if (self.state.warn_ext and !self.state.warned_extra) {
             self.state.warned_extra = true;
@@ -827,7 +942,7 @@ pub const Evaluator = struct {
         const names = [_][]const u8{
             "s",   "c",    "a",    "l",     "e",    "pi",   "j",
             "sin", "cos",  "tan",  "t",     "atan", "asin", "acos",
-            "log", "log2", "log10",
+            "log", "log2", "log10", "l2", "l10",
         };
         for (names) |n| {
             if (std.mem.eql(u8, name, n)) return true;
@@ -1499,6 +1614,31 @@ test "standard mode hides extras" {
     state.color_enabled = false;
     state.standard = true;
     try std.testing.expectError(error.UndefinedFunction, evalPrinted(&state, "abs(-3)"));
+    try std.testing.expectError(error.UndefinedFunction, evalPrinted(&state, "perm(5, 2)"));
+}
+
+test "negative compare max min perm comb modexp" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    const cases = [_]struct { src: []const u8, exp: []const u8 }{
+        .{ .src = "-3 < -1", .exp = "1" },
+        .{ .src = "-1 < -3", .exp = "0" },
+        .{ .src = "max(-3, -1)", .exp = "-1" },
+        .{ .src = "min(-3, -1)", .exp = "-3" },
+        .{ .src = "perm(5, 2)", .exp = "20" },
+        .{ .src = "comb(10, 3)", .exp = "120" },
+        .{ .src = "f(5)", .exp = "120" },
+        .{ .src = "cbrt(8)", .exp = "2" },
+        .{ .src = "root(16, 4)", .exp = "2" },
+        .{ .src = "modexp(2, 10, 17)", .exp = "4" },
+    };
+    for (cases) |c| {
+        const got = try evalPrinted(&state, c.src);
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings(c.exp, got);
+    }
 }
 
 test "irand stays in range" {

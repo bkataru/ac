@@ -979,7 +979,11 @@ pub const BigDec = struct {
                 b.limbs[i - b_shift]
             else
                 0;
-            if (av != bv) return if (av > bv) .gt else .lt;
+            if (av != bv) {
+                const mag_gt = av > bv;
+                if (a.neg) return if (mag_gt) .lt else .gt;
+                return if (mag_gt) .gt else .lt;
+            }
         }
         return .eq;
     }
@@ -1447,6 +1451,20 @@ test "format 0.5 obase 16 contains 0.8" {
     var w: std.Io.Writer = .fixed(&buf);
     try x.format(&w, 16, 1);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "0.8") != null);
+}
+
+test "cmp orders negatives" {
+    const a = std.testing.allocator;
+    var x = try BigDec.fromInt(a, -3);
+    defer x.deinit();
+    var y = try BigDec.fromInt(a, -1);
+    defer y.deinit();
+    try std.testing.expectEqual(std.math.Order.lt, BigDec.cmp(x, y));
+    try std.testing.expectEqual(std.math.Order.gt, BigDec.cmp(y, x));
+    var z = try BigDec.fromInt(a, 2);
+    defer z.deinit();
+    try std.testing.expectEqual(std.math.Order.lt, BigDec.cmp(x, z));
+    try std.testing.expectEqual(std.math.Order.gt, BigDec.cmp(z, x));
 }
 
 test "karatsuba matches schoolbook" {
