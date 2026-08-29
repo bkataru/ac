@@ -58,6 +58,14 @@ pub const State = struct {
     color_enabled: bool = true,
     interactive: bool = true,
     mathlib_loaded: bool = false,
+    /// POSIX-only builtins (hide extras).
+    standard: bool = false,
+    /// Warn once on the first extra builtin.
+    warn_ext: bool = false,
+    warned_extra: bool = false,
+    warn_writer: ?*std.Io.Writer = null,
+    /// GNU bc prints the value of an assignment; POSIX is silent.
+    echo_assign: bool = false,
     prng: std.Random.DefaultPrng = undefined,
     prng_seeded: bool = false,
 
@@ -230,7 +238,7 @@ fn runStatement(
     // Expression statements echo their value unless they are assignments.
     // POSIX bc does not print `x = 3`; GNU bc does as an extension.
     if (stmt.* == .expr) {
-        const silent = isAssignmentExpr(stmt.expr);
+        const silent = isAssignmentExpr(stmt.expr) and !state.echo_assign;
         var result = evaluator.evaluate(stmt.expr) catch |err| {
             try printError(state, stdout, err);
             return true;
@@ -257,7 +265,12 @@ fn runStatement(
                     }
                     state.last = try n.clone(state.allocator);
                 },
-                .str => |s| try stdout.writeAll(s),
+                .str => |str| {
+                    try stdout.writeAll(str);
+                    if (str.len == 0 or str[str.len - 1] != '\n') {
+                        try stdout.writeAll("\n");
+                    }
+                },
             }
         }
 
@@ -407,6 +420,10 @@ fn handleCommand(
         try printVariables(state, stdout);
         return true;
     }
+    if (std.mem.eql(u8, cmd, ":funcs")) {
+        try printFunctions(state, stdout);
+        return true;
+    }
     if (std.mem.eql(u8, cmd, ":clear")) {
         try stdout.writeAll("\x1b[2J\x1b[H");
         return true;
@@ -435,10 +452,16 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  -v, --version           Show version
         \\  -l, --mathlib           Load math library (scale=20)
         \\  -q, --quiet             Suppress the startup banner
+        \\  -s, --standard          POSIX builtins only
+        \\  -w, --warn              Warn on extras
         \\  -e, --expression EXPR   Evaluate EXPR
         \\  --rpn                   Start in RPN (dc) mode
         \\  --infix                 Start in infix (bc) mode
         \\  --no-color              Disable colored output
+        \\  --gnu                   Print assignment values (GNU bc)
+        \\  --scale=N               Set initial scale
+        \\  --ibase=N               Set initial input base
+        \\  --obase=N               Set initial output base
         \\
         \\  FILES are processed in order; `-` means stdin.
         \\
@@ -448,6 +471,7 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  :rpn, :dc        Switch to RPN (dc) mode
         \\  :infix, :bc      Switch to infix (bc) mode
         \\  :vars            Show all variables
+        \\  :funcs           Show all functions
         \\  :clear           Clear screen
         \\
         \\{s}Operators:{s}
@@ -496,6 +520,64 @@ fn printVariables(state: *State, stdout: anytype) !void {
         }
         try stdout.writeAll("\n");
     }
+
+    var ait = state.arrays.iterator();
+    while (ait.next()) |entry| {
+        try stdout.print("{s}[] = ", .{entry.key_ptr.*});
+        const lit = @import("eval.zig").formatArrayLiteral(state.allocator, entry.value_ptr.*, state.obase, state.scale) catch {
+            try stdout.writeAll("?\n");
+            continue;
+        };
+        defer state.allocator.free(lit);
+        try stdout.writeAll(lit);
+        try stdout.writeAll("\n");
+    }
+}
+
+fn printFunctions(state: *State, stdout: anytype) !void {
+    var it = state.functions.iterator();
+    while (it.next()) |entry| {
+        const def = entry.value_ptr.*;
+        try stdout.print("{s}(", .{def.name});
+        for (def.params, 0..) |param, pi| {
+            if (pi > 0) try stdout.writeAll(", ");
+            switch (param.kind) {
+                .scalar => try stdout.writeAll(param.name),
+                .array_copy => try stdout.print("{s}[]", .{param.name}),
+                .array_ref => try stdout.print("*{s}[]", .{param.name}),
+            }
+        }
+        try stdout.writeAll(")\n");
+    }
+}
+
+fn parseDecUsize(s: []const u8) ?usize {
+    if (s.len == 0) return null;
+    return std.fmt.parseInt(usize, s, 10) catch null;
+}
+
+fn parseBaseArg(s: []const u8) ?u8 {
+    const n = parseDecUsize(s) orelse return null;
+    if (n < 2 or n > 16) return null;
+    return @intCast(n);
+}
+
+fn takeFlag(
+    arg: []const u8,
+    name: []const u8,
+    iter: *std.process.Args.Iterator,
+    stderr: *std.Io.Writer,
+) !?[]const u8 {
+    if (std.mem.eql(u8, arg, name)) {
+        return iter.next() orelse {
+            try stderr.print("ac: option requires an argument: {s}\n", .{name});
+            return error.MissingArgument;
+        };
+    }
+    if (arg.len > name.len and std.mem.startsWith(u8, arg, name) and arg[name.len] == '=') {
+        return arg[name.len + 1 ..];
+    }
+    return null;
 }
 
 const CliAction = union(enum) {
@@ -827,6 +909,27 @@ pub fn main(init: std.process.Init) !void {
                     state.mode = .infix;
                 } else if (std.mem.eql(u8, arg, "--no-color")) {
                     state.color_enabled = false;
+                } else if (std.mem.eql(u8, arg, "--gnu")) {
+                    state.echo_assign = true;
+                } else if (std.mem.eql(u8, arg, "--standard")) {
+                    state.standard = true;
+                } else if (std.mem.eql(u8, arg, "--warn")) {
+                    state.warn_ext = true;
+                } else if (try takeFlag(arg, "--scale", &arg_iter, stderr)) |val| {
+                    state.scale = parseDecUsize(val) orelse {
+                        try stderr.print("ac: invalid --scale: {s}\n", .{val});
+                        return error.UnknownOption;
+                    };
+                } else if (try takeFlag(arg, "--ibase", &arg_iter, stderr)) |val| {
+                    state.ibase = parseBaseArg(val) orelse {
+                        try stderr.print("ac: --ibase must be 2..16\n", .{});
+                        return error.InvalidBase;
+                    };
+                } else if (try takeFlag(arg, "--obase", &arg_iter, stderr)) |val| {
+                    state.obase = parseBaseArg(val) orelse {
+                        try stderr.print("ac: --obase must be 2..16\n", .{});
+                        return error.InvalidBase;
+                    };
                 } else if (std.mem.eql(u8, arg, "--expression")) {
                     const expr = arg_iter.next() orelse {
                         try stderr.print("ac: option requires an argument: --expression\n", .{});
@@ -857,6 +960,8 @@ pub fn main(init: std.process.Init) !void {
                             state.mathlib_loaded = true;
                             state.scale = 20;
                         },
+                        's' => state.standard = true,
+                        'w' => state.warn_ext = true,
                         'e' => {
                             const rest = arg[i + 1 ..];
                             const expr: []const u8 = if (rest.len > 0)
@@ -881,6 +986,8 @@ pub fn main(init: std.process.Init) !void {
             try actions.append(allocator, .{ .file = try allocator.dupe(u8, arg) });
         }
     }
+
+    state.warn_writer = stderr;
 
     var stdin_buffer: [4096]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
@@ -984,4 +1091,27 @@ test "brace depth scanner" {
     try std.testing.expectEqual(@as(i32, 0), netBraceDepth(""));
     try std.testing.expectEqual(@as(i32, 1), netBraceDepth("a[0] = {"));
     try std.testing.expectEqual(@as(i32, 0), netBraceDepth("{ /* } */ }"));
+}
+
+test "cli scale and base parsers" {
+    try std.testing.expectEqual(@as(usize, 20), parseDecUsize("20").?);
+    try std.testing.expect(parseDecUsize("") == null);
+    try std.testing.expect(parseDecUsize("abc") == null);
+    try std.testing.expectEqual(@as(u8, 16), parseBaseArg("16").?);
+    try std.testing.expect(parseBaseArg("1") == null);
+    try std.testing.expect(parseBaseArg("17") == null);
+}
+
+test ":funcs lists user functions" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    var dc = Dc.init(&state);
+    defer dc.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const src = "define f(x) {\nreturn x + 1\n}\n:funcs\n";
+    _ = try processReplLines(&state, src, &w, &dc);
+    try std.testing.expectEqualStrings("f(x)\n", w.buffered());
 }

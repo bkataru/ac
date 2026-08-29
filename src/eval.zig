@@ -85,6 +85,46 @@ pub const FunctionDef = struct {
 /// Maximum array elements (bounds runaway growth).
 pub const MAX_ARRAY_LEN: usize = 1 << 20;
 
+/// Format a dense array slot as `[v0, v1, ...]`. Trailing zero holes
+/// are dropped; holes in the middle print as 0.
+pub fn formatArrayLiteral(allocator: std.mem.Allocator, slot: []const Value, obase: u8, scale: usize) std.mem.Allocator.Error![]u8 {
+    var end = slot.len;
+    while (end > 0) {
+        switch (slot[end - 1]) {
+            .num => |n| {
+                if (n.isZero()) {
+                    end -= 1;
+                    continue;
+                }
+            },
+            .str => {},
+        }
+        break;
+    }
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.append(allocator, '[');
+    var i: usize = 0;
+    while (i < end) : (i += 1) {
+        if (i > 0) try buf.appendSlice(allocator, ", ");
+        switch (slot[i]) {
+            .num => |n| {
+                var tmp: [4096]u8 = undefined;
+                var w: std.Io.Writer = .fixed(&tmp);
+                n.format(&w, obase, scale) catch return error.OutOfMemory;
+                try buf.appendSlice(allocator, w.buffered());
+            },
+            .str => |st| {
+                try buf.append(allocator, '[');
+                try buf.appendSlice(allocator, st);
+                try buf.append(allocator, ']');
+            },
+        }
+    }
+    try buf.append(allocator, ']');
+    return buf.toOwnedSlice(allocator);
+}
+
 pub const Evaluator = struct {
     state: *State,
     allocator: std.mem.Allocator,
@@ -145,6 +185,13 @@ pub const Evaluator = struct {
     fn evalVariable(self: *Self, name: []const u8) EvalError!Value {
         if (self.state.variables.get(name)) |value| {
             return value.clone(self.allocator) catch return error.OutOfMemory;
+        }
+        // Bare name with no scalar: if an array of that name exists, print
+        // it as a list literal. bc keeps a and a[] as separate stores; a
+        // defined scalar still wins.
+        if (self.state.arrays.get(name)) |slot| {
+            const s = formatArrayLiteral(self.allocator, slot, self.state.obase, self.state.scale) catch return error.OutOfMemory;
+            return .{ .str = s };
         }
 
         // Undefined variables are zero in bc
@@ -459,6 +506,8 @@ pub const Evaluator = struct {
 
     /// Evaluate function call
     fn evalCall(self: *Self, name: []const u8, args: []const *Expr) EvalError!Value {
+        try self.gateExtra(name);
+
         // Built-in functions
         if (std.mem.eql(u8, name, "sqrt")) {
             if (args.len != 1) return error.WrongArgCount;
@@ -746,6 +795,32 @@ pub const Evaluator = struct {
             error.NonIntegerExponent => error.NonIntegerExponent,
             else => error.OutOfMemory,
         };
+    }
+
+    fn isExtraName(name: []const u8) bool {
+        const names = [_][]const u8{
+            "abs",   "ceil",  "floor", "round", "gcd",   "lcm",   "factorial",
+            "band",  "bor",   "bxor",  "bshl",  "bshr",  "bnot8", "bnot16",
+            "bnot32", "bnot64", "rand", "irand", "sci",   "eng",   "pi",
+            "sin",   "cos",   "tan",   "t",     "atan",  "asin",  "acos",
+            "log",   "log2",  "log10",
+        };
+        for (names) |n| {
+            if (std.mem.eql(u8, name, n)) return true;
+        }
+        return false;
+    }
+
+    fn gateExtra(self: *Self, name: []const u8) EvalError!void {
+        if (!isExtraName(name)) return;
+        if (self.state.standard) return error.UndefinedFunction;
+        if (self.state.warn_ext and !self.state.warned_extra) {
+            self.state.warned_extra = true;
+            if (self.state.warn_writer) |w| {
+                w.print("warning: {s}() is not POSIX bc\n", .{name}) catch {};
+                w.flush() catch {};
+            }
+        }
     }
 
     fn isMathlibName(name: []const u8) bool {
@@ -1386,6 +1461,44 @@ test "rand repeats after seed" {
     const c = try evalPrinted(&state, "rand()");
     defer allocator.free(c);
     try std.testing.expectEqualStrings(a, c);
+}
+
+test "fuzz small integer add sub mul" {
+    var prng = std.Random.DefaultPrng.init(0xac);
+    const rng = prng.random();
+    const allocator = std.testing.allocator;
+    var i: usize = 0;
+    while (i < 80) : (i += 1) {
+        const x: i32 = rng.intRangeAtMost(i32, -5000, 5000);
+        const y: i32 = rng.intRangeAtMost(i32, -5000, 5000);
+        const ops = [_]u8{ '+', '-', '*' };
+        const op = ops[rng.intRangeLessThan(usize, 0, 3)];
+        var src_buf: [64]u8 = undefined;
+        const src = std.fmt.bufPrint(&src_buf, "{d} {c} {d}", .{ x, op, y }) catch unreachable;
+        var state = State.init(allocator);
+        defer state.deinit();
+        state.color_enabled = false;
+        const got = try evalPrinted(&state, src);
+        defer allocator.free(got);
+        const expect: i64 = switch (op) {
+            '+' => @as(i64, x) + @as(i64, y),
+            '-' => @as(i64, x) - @as(i64, y),
+            '*' => @as(i64, x) * @as(i64, y),
+            else => unreachable,
+        };
+        var exp_buf: [32]u8 = undefined;
+        const exp = std.fmt.bufPrint(&exp_buf, "{d}", .{expect}) catch unreachable;
+        try std.testing.expectEqualStrings(exp, got);
+    }
+}
+
+test "standard mode hides extras" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.standard = true;
+    try std.testing.expectError(error.UndefinedFunction, evalPrinted(&state, "abs(-3)"));
 }
 
 test "irand stays in range" {

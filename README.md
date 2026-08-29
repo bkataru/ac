@@ -90,6 +90,12 @@ Example:
 | `--infix` | Read infix like `bc` |
 | `-l`, `--mathlib` | Load the math library, and set `scale = 20` |
 | `-q`, `--quiet` | Do not print the banner |
+| `-s`, `--standard` | POSIX builtins only; hide extras |
+| `-w`, `--warn` | Warn once on the first extra builtin |
+| `--gnu` | Print the value of an assignment (GNU bc) |
+| `--scale=N` | Set initial scale |
+| `--ibase=N` | Set initial input base (2..16) |
+| `--obase=N` | Set initial output base (2..16) |
 | `--no-color` | Do not print colors |
 | `-v` | Print the version |
 | `-h` | Print help |

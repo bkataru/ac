@@ -8,6 +8,8 @@ const Allocator = std.mem.Allocator;
 pub const Limb = i64;
 pub const BASE: i64 = 1_000_000_000;
 pub const BASE_DIGS: usize = 9;
+/// Use Karatsuba when both factors have at least this many limbs.
+pub const karatsuba_cutoff: usize = 32;
 /// Error set shared by BigDec operations.
 pub const Error = error{
     DivisionByZero,
@@ -674,9 +676,9 @@ pub const BigDec = struct {
             self.normalize();
         }
     }
-    /// School multiplication: result limbs computed directly, then radix
-    /// and sign adjusted. Truncation to `scale` is NOT applied here — the
-    /// full exact product is kept (bc-compatible display truncates later).
+    /// School multiplication for small operands; Karatsuba when both
+    /// factors have at least `karatsuba_cutoff` limbs. Truncation to
+    /// `scale` is NOT applied here — the full exact product is kept.
     pub fn mul(self: *Self, a: Self, b: Self, scale: usize) Error!void {
         _ = scale;
         if (a.isZero() or b.isZero()) {
@@ -685,22 +687,21 @@ pub const BigDec = struct {
             self.neg = false;
             return;
         }
-        const result_len = a.len + b.len;
-        const out = try self.allocator.alloc(Limb, result_len);
-        @memset(out, 0);
-        var carry: i64 = 0;
-        for (0..a.len) |i| {
-            carry = 0;
-            for (0..b.len) |j| {
-                const prod = a.limbs[i] * b.limbs[j] + out[i + j] + carry;
-                out[i + j] = @mod(prod, BASE);
-                carry = @divTrunc(prod, BASE);
-            }
-            if (carry > 0) out[i + b.len] += @intCast(carry);
+        try self.mulWithCutoff(a, b, karatsuba_cutoff);
+    }
+
+    /// Multiply with an explicit Karatsuba limb cutoff (tests use 2).
+    pub fn mulWithCutoff(self: *Self, a: Self, b: Self, cutoff: usize) Error!void {
+        if (a.isZero() or b.isZero()) {
+            self.len = 0;
+            self.rdx = 0;
+            self.neg = false;
+            return;
         }
+        const out = try mulLimbs(self.allocator, a.limbs[0..a.len], b.limbs[0..b.len], cutoff);
         if (self.limbs.len > 0) self.allocator.free(self.limbs);
         self.limbs = out;
-        self.len = result_len;
+        self.len = out.len;
         self.rdx = a.rdx + b.rdx;
         self.neg = a.neg != b.neg;
         self.normalize();
@@ -1130,6 +1131,142 @@ pub const BigDec = struct {
         result.rdx = 0;
     }
 };
+
+fn limbTrim(s: []const Limb) []const Limb {
+    var n = s.len;
+    while (n > 0 and s[n - 1] == 0) n -= 1;
+    return s[0..n];
+}
+
+fn mulLimbs(allocator: Allocator, a_in: []const Limb, b_in: []const Limb, cutoff: usize) Error![]Limb {
+    const a = limbTrim(a_in);
+    const b = limbTrim(b_in);
+    if (a.len == 0 or b.len == 0) {
+        const z = try allocator.alloc(Limb, 1);
+        z[0] = 0;
+        return z;
+    }
+    if (a.len < cutoff or b.len < cutoff) return mulSchoolbook(allocator, a, b);
+    return mulKaratsuba(allocator, a, b, cutoff);
+}
+
+fn mulSchoolbook(allocator: Allocator, a: []const Limb, b: []const Limb) Error![]Limb {
+    const out = try allocator.alloc(Limb, a.len + b.len + 1);
+    @memset(out, 0);
+    for (0..a.len) |i| {
+        var carry: i64 = 0;
+        for (0..b.len) |j| {
+            const prod = a[i] * b[j] + out[i + j] + carry;
+            out[i + j] = @mod(prod, BASE);
+            carry = @divTrunc(prod, BASE);
+        }
+        var k = i + b.len;
+        while (carry != 0) {
+            const sum = out[k] + carry;
+            out[k] = @mod(sum, BASE);
+            carry = @divTrunc(sum, BASE);
+            k += 1;
+        }
+    }
+    return out;
+}
+
+fn addLimbs(allocator: Allocator, a: []const Limb, b: []const Limb) Error![]Limb {
+    const n = @max(a.len, b.len);
+    const out = try allocator.alloc(Limb, n + 1);
+    @memset(out, 0);
+    var carry: i64 = 0;
+    var i: usize = 0;
+    while (i < n or carry != 0) : (i += 1) {
+        const av: i64 = if (i < a.len) a[i] else 0;
+        const bv: i64 = if (i < b.len) b[i] else 0;
+        const sum = av + bv + carry;
+        out[i] = @mod(sum, BASE);
+        carry = @divTrunc(sum, BASE);
+    }
+    return out;
+}
+
+fn growLimbs(allocator: Allocator, old: []Limb, n: usize) Error![]Limb {
+    if (old.len >= n) return old;
+    const neu = try allocator.alloc(Limb, n);
+    @memcpy(neu[0..old.len], old);
+    @memset(neu[old.len..], 0);
+    allocator.free(old);
+    return neu;
+}
+
+fn subLimbsInPlace(a: []Limb, b: []const Limb) void {
+    var borrow: i64 = 0;
+    var i: usize = 0;
+    const n = @max(a.len, b.len);
+    while (i < n) : (i += 1) {
+        const av: i64 = if (i < a.len) a[i] else 0;
+        const bv: i64 = if (i < b.len) b[i] else 0;
+        var diff = av - bv - borrow;
+        if (diff < 0) {
+            borrow = 1;
+            diff += BASE;
+        } else {
+            borrow = 0;
+        }
+        if (i < a.len) {
+            a[i] = diff;
+        } else {
+            std.debug.assert(diff == 0);
+        }
+    }
+    std.debug.assert(borrow == 0);
+}
+
+fn addShift(out: []Limb, src: []const Limb, shift: usize) void {
+    var carry: i64 = 0;
+    var i: usize = 0;
+    while (i < src.len or carry != 0) : (i += 1) {
+        const idx = i + shift;
+        std.debug.assert(idx < out.len);
+        const sv: i64 = if (i < src.len) src[i] else 0;
+        const sum = out[idx] + sv + carry;
+        out[idx] = @mod(sum, BASE);
+        carry = @divTrunc(sum, BASE);
+    }
+}
+
+fn mulKaratsuba(allocator: Allocator, a: []const Limb, b: []const Limb, cutoff: usize) Error![]Limb {
+    const n = @max(a.len, b.len);
+    const m = n / 2;
+    if (m == 0) return mulSchoolbook(allocator, a, b);
+
+    const a0 = if (a.len > m) a[0..m] else a;
+    const a1: []const Limb = if (a.len > m) a[m..] else a[0..0];
+    const b0 = if (b.len > m) b[0..m] else b;
+    const b1: []const Limb = if (b.len > m) b[m..] else b[0..0];
+
+    const z0 = try mulLimbs(allocator, a0, b0, cutoff);
+    defer allocator.free(z0);
+    const z2 = try mulLimbs(allocator, a1, b1, cutoff);
+    defer allocator.free(z2);
+
+    const sa = try addLimbs(allocator, a0, a1);
+    defer allocator.free(sa);
+    const sb = try addLimbs(allocator, b0, b1);
+    defer allocator.free(sb);
+
+    var z1p = try mulLimbs(allocator, sa, sb, cutoff);
+    z1p = try growLimbs(allocator, z1p, @max(limbTrim(z0).len, limbTrim(z2).len));
+    defer allocator.free(z1p);
+    subLimbsInPlace(z1p, limbTrim(z0));
+    subLimbsInPlace(z1p, limbTrim(z2));
+
+    // Product fits in na+nb limbs; z1 shifted by m can need one extra.
+    const out = try allocator.alloc(Limb, a.len + b.len + m + 8);
+    @memset(out, 0);
+    addShift(out, limbTrim(z0), 0);
+    addShift(out, limbTrim(z1p), m);
+    addShift(out, limbTrim(z2), 2 * m);
+    return out;
+}
+
 test "parse and format round trip" {
     const a = std.testing.allocator;
     var x = try BigDec.parse(a, "123.456", 10);
@@ -1310,4 +1447,54 @@ test "format 0.5 obase 16 contains 0.8" {
     var w: std.Io.Writer = .fixed(&buf);
     try x.format(&w, 16, 1);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "0.8") != null);
+}
+
+test "karatsuba matches schoolbook" {
+    const a = std.testing.allocator;
+    const digits = "1234567890123456789012345678901234567890123456789012345678901234567890";
+    var x = try BigDec.parse(a, digits, 10);
+    defer x.deinit();
+    var y = try BigDec.parse(a, digits, 10);
+    defer y.deinit();
+    var school = BigDec.init(a);
+    defer school.deinit();
+    try school.mulWithCutoff(x, y, 10000);
+    var kara = BigDec.init(a);
+    defer kara.deinit();
+    try kara.mulWithCutoff(x, y, 2);
+    try std.testing.expectEqual(std.math.Order.eq, school.cmp(kara));
+}
+
+test "karatsuba uneven limb counts" {
+    const a = std.testing.allocator;
+    var x = try BigDec.parse(a, "999999999999999999999999999999", 10);
+    defer x.deinit();
+    var y = try BigDec.parse(a, "7", 10);
+    defer y.deinit();
+    var school = BigDec.init(a);
+    defer school.deinit();
+    try school.mulWithCutoff(x, y, 10000);
+    var kara = BigDec.init(a);
+    defer kara.deinit();
+    try kara.mulWithCutoff(x, y, 2);
+    try std.testing.expectEqual(std.math.Order.eq, school.cmp(kara));
+}
+
+test "mul bench schoolbook vs karatsuba" {
+    const a = std.testing.allocator;
+    var digits: [360]u8 = undefined;
+    @memset(&digits, '9');
+    var x = try BigDec.parse(a, &digits, 10);
+    defer x.deinit();
+    var y = try BigDec.parse(a, &digits, 10);
+    defer y.deinit();
+    var school = BigDec.init(a);
+    defer school.deinit();
+    try school.mulWithCutoff(x, y, 10000);
+    var kara = BigDec.init(a);
+    defer kara.deinit();
+    try kara.mulWithCutoff(x, y, 2);
+    try std.testing.expectEqual(std.math.Order.eq, school.cmp(kara));
+    try std.testing.expect(x.len >= 32);
+    try std.testing.expect(school.len > 0);
 }

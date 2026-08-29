@@ -11,6 +11,8 @@ const Fixture = struct {
     mathlib: bool = false,
     rpn: bool = false,
     repl: bool = false,
+    echo_assign: bool = false,
+    standard: bool = false,
 };
 
 const fixtures = [_]Fixture{
@@ -27,6 +29,8 @@ const fixtures = [_]Fixture{
     .{ .name = "arrays", .source = @embedFile("arrays.ac"), .expected = @embedFile("arrays.out") },
     .{ .name = "loops", .source = @embedFile("loops.ac"), .expected = @embedFile("loops.out") },
     .{ .name = "dc_extra", .source = @embedFile("dc_extra.dc"), .expected = @embedFile("dc_extra.out"), .rpn = true },
+    .{ .name = "gnu_assign", .source = @embedFile("gnu_assign.ac"), .expected = @embedFile("gnu_assign.out"), .echo_assign = true },
+    .{ .name = "standard", .source = @embedFile("standard.ac"), .expected = @embedFile("standard.out"), .standard = true },
 };
 
 fn stripCrlf(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
@@ -49,6 +53,8 @@ fn runFixture(f: Fixture) !void {
         state.scale = 20;
     }
     if (f.rpn) state.mode = .rpn;
+    if (f.echo_assign) state.echo_assign = true;
+    if (f.standard) state.standard = true;
 
     var dc = Dc.init(&state);
     defer dc.deinit();

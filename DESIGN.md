@@ -677,6 +677,7 @@ OPTIONS:
     --rpn               Start in RPN (dc) mode
     --infix             Start in infix (bc) mode [default]
     --no-color          Disable colored output
+    --gnu               Print assignment values (GNU bc)
     --scale=N           Set initial scale
     --ibase=N           Set initial input base
     --obase=N           Set initial output base
@@ -747,8 +748,8 @@ INTERACTIVE COMMANDS:
 1. **Unit Tests**: Each module has inline tests
 2. **Integration Tests**: Full expression evaluation
 3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, extras, extras_mathlib, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
-4. **Fuzz Testing**: Random expression generation
-5. **Benchmarks**: Compare with bc-dc-reference
+4. **Fuzz Testing**: Random integer `+` `-` `*` in `eval.zig`
+5. **Benchmarks**: Karatsuba vs schoolbook mul in `num.zig` (`zig build test`)
 
 ---
 

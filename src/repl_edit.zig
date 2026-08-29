@@ -393,7 +393,7 @@ const mathlib_words = [_][]const u8{
     "atan", "asin", "acos", "log", "log2", "log10",
 };
 const command_words = [_][]const u8{
-    ":help", ":h", ":?", ":quit", ":q", ":rpn", ":dc", ":infix", ":bc", ":vars", ":clear",
+    ":help", ":h", ":?", ":quit", ":q", ":rpn", ":dc", ":infix", ":bc", ":vars", ":funcs", ":clear",
 };
 
 
