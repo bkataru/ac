@@ -31,7 +31,8 @@ ac/
     parse.zig        # Infix parser (Pratt)
     eval.zig         # AST evaluator for infix mode
     dc.zig           # RPN (dc) evaluator and macros
-    mathlib.zig      # Hardcoded -l math library (s, c, a, l, e, pi, j)
+    mathlib.zig      # Hardcoded -l math library (s, c, a, l, e, pi, j) plus extras
+    repl_edit.zig    # Interactive line editing and ~/.ac_history
     # (POSIX fixtures live in tests/posix/, run via tests/posix/runner.zig)
   tests/posix/       # Small POSIX fixture pack (.ac/.dc + expected .out)
   build.zig
@@ -720,15 +721,15 @@ INTERACTIVE COMMANDS:
 
 ### Phase 4: Math Library
 - [x] POSIX -l: s(x), c(x), a(x), l(x), e(x), j(n,x); also pi() (hardcoded Zig, gated by -l; -l sets scale=20)
-- [ ] tan, asin, acos aliases; longer names
-- [ ] Logarithmic extras: log, log2, log10
-- [ ] Utility: abs, ceil, floor, round
-- [ ] Number theory: gcd, lcm, factorial builtin
+- [x] tan, asin, acos aliases; longer names (sin, cos, atan, t)
+- [x] Logarithmic extras: log, log2, log10
+- [x] Utility: abs, ceil, floor, round
+- [x] Number theory: gcd, lcm, factorial builtin
 
 ### Phase 5: TUI Polish
 - [x] ANSI color output (disabled when stdin is not a tty; --no-color)
 - [ ] Syntax highlighting
-- [ ] Line editing with history
+- [x] Line editing with history (`~/.ac_history`; arrows, backspace)
 - [ ] Tab completion
 - [x] Better error messages with context (caret diagnostics)
 
@@ -745,7 +746,7 @@ INTERACTIVE COMMANDS:
 
 1. **Unit Tests**: Each module has inline tests
 2. **Integration Tests**: Full expression evaluation
-3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
+3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, extras, extras_mathlib, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
 4. **Fuzz Testing**: Random expression generation
 5. **Benchmarks**: Compare with bc-dc-reference
 

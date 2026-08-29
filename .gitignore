@@ -1,3 +1,7 @@
 # Zig build cache and output
 .zig-cache/
 zig-out/
+
+# Interactive REPL history
+.ac_history
+

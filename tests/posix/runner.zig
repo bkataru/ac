@@ -20,6 +20,8 @@ const fixtures = [_]Fixture{
     .{ .name = "fact", .source = @embedFile("fact.ac"), .expected = @embedFile("fact.out") },
     .{ .name = "repl_multiline", .source = @embedFile("repl_multiline.ac"), .expected = @embedFile("repl_multiline.out"), .repl = true },
     .{ .name = "mathlib", .source = @embedFile("mathlib.ac"), .expected = @embedFile("mathlib.out"), .mathlib = true },
+    .{ .name = "extras", .source = @embedFile("extras.ac"), .expected = @embedFile("extras.out") },
+    .{ .name = "extras_mathlib", .source = @embedFile("extras_mathlib.ac"), .expected = @embedFile("extras_mathlib.out"), .mathlib = true },
     .{ .name = "macros", .source = @embedFile("macros.dc"), .expected = @embedFile("macros.out"), .rpn = true },
     .{ .name = "length", .source = @embedFile("length.ac"), .expected = @embedFile("length.out") },
     .{ .name = "arrays", .source = @embedFile("arrays.ac"), .expected = @embedFile("arrays.out") },

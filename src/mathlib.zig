@@ -1,4 +1,6 @@
-//! bc -l math library: pi, ln, exp, sin, cos, atan, Bessel j(n,x).
+//! bc -l math library: pi, ln, exp, sin, cos, atan, Bessel j(n,x),
+//! plus extras (tan, asin, acos, log*) and always-on helpers
+//! (abs, ceil, floor, round, gcd, lcm, factorial).
 //!
 //! All series are evaluated at internal precision p = scale + GUARD
 //! digits; final results are truncated to `scale`. Terms iterate with
@@ -700,6 +702,261 @@ pub fn besselJ(alloc: Allocator, n_in: BigDec, x: BigDec, scale: usize) !BigDec 
     return result;
 }
 
+fn truncTowardZero(alloc: Allocator, x: BigDec) !BigDec {
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var t = BigDec.init(alloc);
+    errdefer t.deinit();
+    try t.div(x, one, 0);
+    return t;
+}
+
+/// Absolute value.
+pub fn abs(alloc: Allocator, x: BigDec) !BigDec {
+    return absOf(alloc, x);
+}
+
+/// Greatest integer ≤ x.
+pub fn floor(alloc: Allocator, x: BigDec) !BigDec {
+    var t = try truncTowardZero(alloc, x);
+    if (x.fracDigitCount() == 0 or !isNeg(x)) return t;
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.sub(t, one, 0);
+    t.deinit();
+    return out;
+}
+
+/// Least integer ≥ x.
+pub fn ceil(alloc: Allocator, x: BigDec) !BigDec {
+    var t = try truncTowardZero(alloc, x);
+    if (x.fracDigitCount() == 0 or isNeg(x)) return t;
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.add(t, one, 0);
+    t.deinit();
+    return out;
+}
+
+/// Nearest integer; halves move away from zero.
+pub fn round(alloc: Allocator, x: BigDec) !BigDec {
+    var t = try truncTowardZero(alloc, x);
+    if (x.fracDigitCount() == 0) return t;
+    var ax = try absOf(alloc, x);
+    defer ax.deinit();
+    var at = try absOf(alloc, t);
+    defer at.deinit();
+    var frac = BigDec.init(alloc);
+    defer frac.deinit();
+    try frac.sub(ax, at, 0);
+    var half = try BigDec.parse(alloc, "0.5", 10);
+    defer half.deinit();
+    if (BigDec.cmp(frac, half) == .lt) return t;
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    if (isNeg(x)) {
+        try out.sub(t, one, 0);
+    } else {
+        try out.add(t, one, 0);
+    }
+    t.deinit();
+    return out;
+}
+
+/// Positive gcd. Both arguments must be integers.
+pub fn gcd(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    if (a.fracDigitCount() != 0 or b.fracDigitCount() != 0) return error.InvalidOperand;
+    var x = try absOf(alloc, a);
+    errdefer x.deinit();
+    var y = try absOf(alloc, b);
+    errdefer y.deinit();
+    while (!y.isZero()) {
+        var r = BigDec.init(alloc);
+        errdefer r.deinit();
+        try r.mod(x, y, 0);
+        x.deinit();
+        x = y;
+        y = r;
+    }
+    y.deinit();
+    return x;
+}
+
+/// Positive lcm. Both arguments must be integers.
+pub fn lcm(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    if (a.fracDigitCount() != 0 or b.fracDigitCount() != 0) return error.InvalidOperand;
+    if (a.isZero() or b.isZero()) return BigDec.fromInt(alloc, 0);
+    var g = try gcd(alloc, a, b);
+    defer g.deinit();
+    var ax = try absOf(alloc, a);
+    defer ax.deinit();
+    var bx = try absOf(alloc, b);
+    defer bx.deinit();
+    var prod = BigDec.init(alloc);
+    defer prod.deinit();
+    try prod.mul(ax, bx, 0);
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(prod, g, 0);
+    return out;
+}
+
+/// n! for a non-negative integer n ≤ 1000.
+pub fn factorial(alloc: Allocator, n: BigDec) !BigDec {
+    if (n.fracDigitCount() != 0 or isNeg(n)) return error.InvalidOperand;
+    const f = n.toF64() catch return error.InvalidOperand;
+    if (!std.math.isFinite(f) or f > 1000) return error.InvalidOperand;
+    const ni: i64 = @intFromFloat(f);
+    var acc = try BigDec.fromInt(alloc, 1);
+    errdefer acc.deinit();
+    var i: i64 = 2;
+    while (i <= ni) : (i += 1) {
+        var di = try BigDec.fromInt(alloc, i);
+        defer di.deinit();
+        var next = BigDec.init(alloc);
+        errdefer next.deinit();
+        try next.mul(acc, di, 0);
+        acc.deinit();
+        acc = next;
+    }
+    return acc;
+}
+
+/// tan(x) = sin(x) / cos(x).
+pub fn tan(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    const p = prec(scale);
+    var s = try sin(alloc, x, p);
+    defer s.deinit();
+    var c = try cos(alloc, x, p);
+    defer c.deinit();
+    if (c.isZero()) return error.InvalidOperand;
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(s, c, p);
+    return out;
+}
+
+/// asin(x) for |x| ≤ 1, via atan(x / sqrt(1 − x²)).
+pub fn asin(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    const p = prec(scale);
+    var ax = try absOf(alloc, x);
+    defer ax.deinit();
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    switch (BigDec.cmp(ax, one)) {
+        .gt => return error.InvalidOperand,
+        .eq => {
+            var half_pi = try pi(alloc, p);
+            var two = try BigDec.fromInt(alloc, 2);
+            defer two.deinit();
+            var out = BigDec.init(alloc);
+            errdefer out.deinit();
+            try out.div(half_pi, two, p);
+            half_pi.deinit();
+            if (isNeg(x)) out.neg = true;
+            return out;
+        },
+        .lt => {},
+    }
+    var xsq = BigDec.init(alloc);
+    defer xsq.deinit();
+    try xsq.mul(x, x, p);
+    var inner = BigDec.init(alloc);
+    defer inner.deinit();
+    try inner.sub(one, xsq, p);
+    var root = BigDec.init(alloc);
+    defer root.deinit();
+    try root.sqrt(inner, p);
+    if (root.isZero()) return error.InvalidOperand;
+    var q = BigDec.init(alloc);
+    defer q.deinit();
+    try q.div(x, root, p);
+    return atan(alloc, q, scale);
+}
+
+/// acos(x) = π/2 − asin(x).
+pub fn acos(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    var ax = try absOf(alloc, x);
+    defer ax.deinit();
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    switch (BigDec.cmp(ax, one)) {
+        .gt => return error.InvalidOperand,
+        .eq => {
+            if (!isNeg(x)) return BigDec.fromInt(alloc, 0);
+            return pi(alloc, scale);
+        },
+        .lt => {},
+    }
+
+    const p = prec(scale);
+    // Pass `scale`, not `p`. asin() already adds guard digits.
+    var a = try asin(alloc, x, scale);
+    defer a.deinit();
+    var half_pi = try pi(alloc, p);
+    defer half_pi.deinit();
+    var two = try BigDec.fromInt(alloc, 2);
+    defer two.deinit();
+    var q = BigDec.init(alloc);
+    defer q.deinit();
+    try q.div(half_pi, two, p);
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.sub(q, a, p);
+    if (out.isZero()) out.neg = false;
+    return out;
+}
+
+/// log base 2.
+pub fn log2(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    const p = prec(scale);
+    var ln_x = try ln(alloc, x, p);
+    defer ln_x.deinit();
+    var two = try BigDec.fromInt(alloc, 2);
+    defer two.deinit();
+    var ln_2 = try ln(alloc, two, p);
+    defer ln_2.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(ln_x, ln_2, p);
+    return out;
+}
+
+/// log base 10.
+pub fn log10(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
+    const p = prec(scale);
+    var ln_x = try ln(alloc, x, p);
+    defer ln_x.deinit();
+    var ten = try BigDec.fromInt(alloc, 10);
+    defer ten.deinit();
+    var ln_10 = try ln(alloc, ten, p);
+    defer ln_10.deinit();
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(ln_x, ln_10, p);
+    return out;
+}
+
+/// log(x, b) = ln(x) / ln(b).
+pub fn logBase(alloc: Allocator, x: BigDec, base: BigDec, scale: usize) !BigDec {
+    const p = prec(scale);
+    var ln_x = try ln(alloc, x, p);
+    defer ln_x.deinit();
+    var ln_b = try ln(alloc, base, p);
+    defer ln_b.deinit();
+    if (ln_b.isZero()) return error.InvalidOperand;
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(ln_x, ln_b, p);
+    return out;
+}
+
 test "pi digits" {
     const alloc = std.testing.allocator;
     var p = try pi(alloc, 20);
@@ -764,4 +1021,100 @@ test "bessel j" {
         try jv.format(&w, 10, 20);
         try std.testing.expect(std.mem.startsWith(u8, w.buffered(), c.prefix));
     }
+}
+
+fn expectFmt(n: BigDec, scale: usize, expected: []const u8) !void {
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try n.format(&w, 10, scale);
+    try std.testing.expectEqualStrings(expected, w.buffered());
+}
+
+test "abs ceil floor round gcd lcm factorial" {
+    const alloc = std.testing.allocator;
+
+    var neg = try BigDec.parse(alloc, "-3.2", 10);
+    defer neg.deinit();
+    var a = try abs(alloc, neg);
+    defer a.deinit();
+    try expectFmt(a, 1, "3.2");
+
+    var f1 = try floor(alloc, neg);
+    defer f1.deinit();
+    try expectFmt(f1, 0, "-4");
+    var c1 = try ceil(alloc, neg);
+    defer c1.deinit();
+    try expectFmt(c1, 0, "-3");
+
+    var p = try BigDec.parse(alloc, "1.2", 10);
+    defer p.deinit();
+    var f2 = try floor(alloc, p);
+    defer f2.deinit();
+    try expectFmt(f2, 0, "1");
+    var c2 = try ceil(alloc, p);
+    defer c2.deinit();
+    try expectFmt(c2, 0, "2");
+
+    var h = try BigDec.parse(alloc, "2.5", 10);
+    defer h.deinit();
+    var r = try round(alloc, h);
+    defer r.deinit();
+    try expectFmt(r, 0, "3");
+    var hn = try BigDec.parse(alloc, "-2.5", 10);
+    defer hn.deinit();
+    var rn = try round(alloc, hn);
+    defer rn.deinit();
+    try expectFmt(rn, 0, "-3");
+
+    var twelve = try BigDec.fromInt(alloc, 12);
+    defer twelve.deinit();
+    var eighteen = try BigDec.fromInt(alloc, 18);
+    defer eighteen.deinit();
+    var g = try gcd(alloc, twelve, eighteen);
+    defer g.deinit();
+    try expectFmt(g, 0, "6");
+    var el = try lcm(alloc, twelve, eighteen);
+    defer el.deinit();
+    try expectFmt(el, 0, "36");
+
+    var ten = try BigDec.fromInt(alloc, 10);
+    defer ten.deinit();
+    var fact = try factorial(alloc, ten);
+    defer fact.deinit();
+    try expectFmt(fact, 0, "3628800");
+}
+
+test "log2 log10 tan asin acos" {
+    const alloc = std.testing.allocator;
+    var eight = try BigDec.fromInt(alloc, 8);
+    defer eight.deinit();
+    var l2 = try log2(alloc, eight, 10);
+    defer l2.deinit();
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try l2.format(&w, 10, 8);
+    try std.testing.expect(std.mem.startsWith(u8, w.buffered(), "3.0000000"));
+
+    var hundred = try BigDec.fromInt(alloc, 100);
+    defer hundred.deinit();
+    var l10 = try log10(alloc, hundred, 10);
+    defer l10.deinit();
+    w = .fixed(&buf);
+    try l10.format(&w, 10, 8);
+    try std.testing.expect(std.mem.startsWith(u8, w.buffered(), "2.0000000"));
+
+    var zero = try BigDec.fromInt(alloc, 0);
+    defer zero.deinit();
+    var t0 = try tan(alloc, zero, 10);
+    defer t0.deinit();
+    try expectFmt(t0, 1, "0");
+
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var ac = try acos(alloc, one, 10);
+    defer ac.deinit();
+    try expectFmt(ac, 2, "0");
+    var as0 = try asin(alloc, zero, 10);
+    defer as0.deinit();
+    try expectFmt(as0, 2, "0");
 }

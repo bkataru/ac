@@ -12,6 +12,7 @@ pub const Dc = @import("dc.zig").Dc;
 const FunctionDef = @import("eval.zig").FunctionDef;
 const Stmt = @import("parse.zig").Stmt;
 const Expr = @import("parse.zig").Expr;
+const repl_edit = @import("repl_edit.zig");
 
 pub const version = "0.1.0";
 
@@ -441,6 +442,12 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  ibase             Input base (default: 10)
         \\  obase             Output base (default: 10)
         \\  sqrt(x)           Square root
+        \\  abs ceil floor round
+        \\  gcd lcm factorial
+        \\  -l: s c a l e j pi
+        \\      sin cos tan atan asin acos
+        \\      log log2 log10
+        \\  Up/Down arrows recall previous lines
         \\
     , .{ c, r, version, c, r, c, r, c, r, c, r, c, r });
 }
@@ -473,15 +480,33 @@ const CliAction = union(enum) {
     stdin,
 };
 
-/// Read one physical line into buf (through LF, CR dropped so CRLF and
-/// LF input behave the same). Returns the byte count; sets `eof_out`
-/// when the stream ended (a partial final line still counts).
+fn formatPrompt(buf: []u8, state: *const State, continuation: bool) []const u8 {
+    if (continuation) {
+        if (state.color_enabled) {
+            return std.fmt.bufPrint(buf, "{s}..>{s} ", .{ Color.prompt, Color.reset }) catch "..> ";
+        }
+        return "..> ";
+    }
+    const prompt_color = if (state.mode == .infix) Color.prompt else Color.prompt_rpn;
+    const prompt_text = if (state.mode == .infix) "ac" else "dc";
+    if (state.color_enabled) {
+        return std.fmt.bufPrint(buf, "{s}{s}>{s} ", .{ prompt_color, prompt_text, Color.reset }) catch "ac> ";
+    }
+    return std.fmt.bufPrint(buf, "{s}> ", .{prompt_text}) catch "ac> ";
+}
+
 fn readPhysicalLine(
     stdin: *std.Io.Reader,
     buf: []u8,
     eof_out: *bool,
     stderr: *std.Io.Writer,
+    editor: ?*repl_edit.Editor,
+    stdout: ?*std.Io.Writer,
+    prompt: []const u8,
 ) usize {
+    if (editor) |ed| {
+        return ed.readLine(stdin, stdout.?, prompt, buf, eof_out, stderr);
+    }
     var n: usize = 0;
     while (true) {
         const ch = stdin.takeByte() catch |err| {
@@ -510,11 +535,14 @@ fn readInputLine(
     buf: []u8,
     eof_out: *bool,
     stderr: *std.Io.Writer,
+    editor: ?*repl_edit.Editor,
+    stdout: ?*std.Io.Writer,
+    prompt: []const u8,
 ) usize {
-    var line_len = readPhysicalLine(stdin, buf, eof_out, stderr);
+    var line_len = readPhysicalLine(stdin, buf, eof_out, stderr, editor, stdout, prompt);
     while (line_len >= 1 and buf[line_len - 1] == '\\' and !eof_out.*) {
         line_len -= 1; // drop the backslash
-        const part = readPhysicalLine(stdin, buf[line_len..], eof_out, stderr);
+        const part = readPhysicalLine(stdin, buf[line_len..], eof_out, stderr, editor, stdout, "");
         line_len += part;
         if (eof_out.* and part == 0) break;
     }
@@ -617,24 +645,28 @@ fn runRepl(
     stderr: *std.Io.Writer,
     stdin_reader: *std.Io.File.Reader,
     dc: *Dc,
+    io: std.Io,
+    editor: *repl_edit.Editor,
 ) !void {
     const stdin = &stdin_reader.interface;
+    const ed: ?*repl_edit.Editor = if (state.interactive) editor else null;
+    if (ed) |e| {
+        e.enableRaw(io, std.Io.File.stdin());
+    }
+    defer if (ed) |e| e.disableRaw();
+
     while (true) {
-        if (state.interactive) {
-            const prompt_color = if (state.mode == .infix) Color.prompt else Color.prompt_rpn;
-            const prompt_text = if (state.mode == .infix) "ac" else "dc";
-            if (state.color_enabled) {
-                try stdout.print("{s}{s}>{s} ", .{ prompt_color, prompt_text, Color.reset });
-            } else {
-                try stdout.print("{s}> ", .{prompt_text});
-            }
+        var prompt_buf: [64]u8 = undefined;
+        const prompt = formatPrompt(&prompt_buf, state, false);
+        if (state.interactive and ed == null) {
+            try stdout.writeAll(prompt);
             try stdout.flush();
         }
 
         // Read one logical line (spliced on trailing backslashes).
         var line_buf: [4096]u8 = undefined;
         var hit_eof = false;
-        const line_len = readInputLine(stdin, &line_buf, &hit_eof, stderr);
+        const line_len = readInputLine(stdin, &line_buf, &hit_eof, stderr, ed, stdout, prompt);
 
         // Multiline defines: accumulate lines while braces stay unbalanced.
         // dc mode has no brace syntax, so no accumulation there.
@@ -643,17 +675,15 @@ fn runRepl(
         try acc.appendSlice(state.allocator, line_buf[0..line_len]);
         var aborted = false;
         while (state.mode == .infix and netBraceDepth(acc.items) > 0) {
-            if (state.interactive) {
-                if (state.color_enabled) {
-                    try stdout.print("{s}..>{s} ", .{ Color.prompt, Color.reset });
-                } else {
-                    try stdout.writeAll("..> ");
-                }
+            var cont_prompt_buf: [64]u8 = undefined;
+            const cont_prompt = formatPrompt(&cont_prompt_buf, state, true);
+            if (state.interactive and ed == null) {
+                try stdout.writeAll(cont_prompt);
                 try stdout.flush();
             }
             var cont_buf: [4096]u8 = undefined;
             var cont_eof = false;
-            const cont_len = readInputLine(stdin, &cont_buf, &cont_eof, stderr);
+            const cont_len = readInputLine(stdin, &cont_buf, &cont_eof, stderr, ed, stdout, cont_prompt);
             if (cont_len == 0 and cont_eof) {
                 // Stream ended mid-define: discard and exit.
                 acc.clearRetainingCapacity();
@@ -865,7 +895,24 @@ pub fn main(init: std.process.Init) !void {
         try stdout.flush();
     }
 
-    try runRepl(&state, stdout, stderr, &stdin_reader, &dc);
+    var editor = repl_edit.Editor.init(allocator);
+    defer editor.deinit();
+    var hist_path: ?[]u8 = null;
+    defer if (hist_path) |hp| {
+        editor.save(io, hp);
+        allocator.free(hp);
+    };
+    if (state.interactive) {
+        hist_path = historyFilePath(init, allocator);
+        if (hist_path) |hp| editor.load(io, hp);
+    }
+
+    try runRepl(&state, stdout, stderr, &stdin_reader, &dc, io, &editor);
+}
+
+fn historyFilePath(init: std.process.Init, allocator: std.mem.Allocator) ?[]u8 {
+    const home = init.environ_map.get("HOME") orelse init.environ_map.get("USERPROFILE") orelse return null;
+    return std.fs.path.join(allocator, &.{ home, ".ac_history" }) catch null;
 }
 
 test "basic sanity" {
@@ -875,6 +922,7 @@ test "basic sanity" {
     _ = @import("eval.zig");
     _ = @import("mathlib.zig");
     _ = @import("dc.zig");
+    _ = @import("repl_edit.zig");
 }
 
 test "brace depth scanner" {

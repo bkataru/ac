@@ -522,12 +522,45 @@ pub const Evaluator = struct {
             return .{ .num = n };
         }
 
-        if ((std.mem.eql(u8, name, "s") or std.mem.eql(u8, name, "c") or
-            std.mem.eql(u8, name, "a") or std.mem.eql(u8, name, "l") or
-            std.mem.eql(u8, name, "e") or std.mem.eql(u8, name, "pi") or
-            std.mem.eql(u8, name, "j")) and
-            !self.state.mathlib_loaded)
-        {
+        if (std.mem.eql(u8, name, "abs")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.abs(self.allocator, x) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "floor")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.floor(self.allocator, x) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "ceil")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.ceil(self.allocator, x) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "round")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.round(self.allocator, x) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "gcd")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.gcd(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "lcm")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.lcm(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "factorial")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.factorial(self.allocator, x) catch |err| return mapMath(err) };
+        }
+
+        if (isMathlibName(name) and !self.state.mathlib_loaded) {
             return error.UndefinedFunction;
         }
 
@@ -536,61 +569,120 @@ pub const Evaluator = struct {
             return .{ .num = mathlib.pi(self.allocator, self.state.scale) catch return error.OutOfMemory };
         }
         if (std.mem.eql(u8, name, "e")) {
-            if (args.len != 1) return error.WrongArgCount;
-            var arg_v = try self.evaluate(args[0]);
-            defer arg_v.deinit(self.allocator);
-            const arg = arg_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.exp(self.allocator, arg, self.state.scale) catch return error.OutOfMemory };
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.exp(self.allocator, x, self.state.scale) catch return error.OutOfMemory };
         }
-        if (std.mem.eql(u8, name, "l")) {
-            if (args.len != 1) return error.WrongArgCount;
-            var arg_v = try self.evaluate(args[0]);
-            defer arg_v.deinit(self.allocator);
-            const arg = arg_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.ln(self.allocator, arg, self.state.scale) catch |err| switch (err) {
-                error.InvalidOperand => return error.InvalidOperand,
-                else => return error.OutOfMemory,
-            } };
+        if (std.mem.eql(u8, name, "l") or (std.mem.eql(u8, name, "log") and args.len == 1)) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.ln(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
         }
-        if (std.mem.eql(u8, name, "s")) {
-            if (args.len != 1) return error.WrongArgCount;
-            var arg_v = try self.evaluate(args[0]);
-            defer arg_v.deinit(self.allocator);
-            const arg = arg_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.sin(self.allocator, arg, self.state.scale) catch return error.OutOfMemory };
+        if (std.mem.eql(u8, name, "log") and args.len == 2) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.logBase(self.allocator, pair.a, pair.b, self.state.scale) catch |err| return mapMath(err) };
         }
-        if (std.mem.eql(u8, name, "c")) {
-            if (args.len != 1) return error.WrongArgCount;
-            var arg_v = try self.evaluate(args[0]);
-            defer arg_v.deinit(self.allocator);
-            const arg = arg_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.cos(self.allocator, arg, self.state.scale) catch return error.OutOfMemory };
+        if (std.mem.eql(u8, name, "log")) return error.WrongArgCount;
+        if (std.mem.eql(u8, name, "log2")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.log2(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
         }
-        if (std.mem.eql(u8, name, "a")) {
-            if (args.len != 1) return error.WrongArgCount;
-            var arg_v = try self.evaluate(args[0]);
-            defer arg_v.deinit(self.allocator);
-            const arg = arg_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.atan(self.allocator, arg, self.state.scale) catch return error.OutOfMemory };
+        if (std.mem.eql(u8, name, "log10")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.log10(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "s") or std.mem.eql(u8, name, "sin")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.sin(self.allocator, x, self.state.scale) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "c") or std.mem.eql(u8, name, "cos")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.cos(self.allocator, x, self.state.scale) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "a") or std.mem.eql(u8, name, "atan")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.atan(self.allocator, x, self.state.scale) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "t") or std.mem.eql(u8, name, "tan")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.tan(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "asin")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.asin(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "acos")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.acos(self.allocator, x, self.state.scale) catch |err| return mapMath(err) };
         }
         if (std.mem.eql(u8, name, "j")) {
-            if (args.len != 2) return error.WrongArgCount;
-            var n_v = try self.evaluate(args[0]);
-            defer n_v.deinit(self.allocator);
-            var x_v = try self.evaluate(args[1]);
-            defer x_v.deinit(self.allocator);
-            const n_arg = n_v.asNum() orelse return error.InvalidOperand;
-            const x_arg = x_v.asNum() orelse return error.InvalidOperand;
-            return .{ .num = mathlib.besselJ(self.allocator, n_arg, x_arg, self.state.scale) catch |err| switch (err) {
-                error.InvalidOperand => return error.InvalidOperand,
-                error.NonIntegerExponent => return error.NonIntegerExponent,
-                error.DivisionByZero => return error.DivisionByZero,
-                else => return error.OutOfMemory,
-            } };
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.besselJ(self.allocator, pair.a, pair.b, self.state.scale) catch |err| return mapMath(err) };
         }
 
         // User-defined function
         return self.callFunction(name, args);
+    }
+
+    fn evalOneNum(self: *Self, args: []const *Expr) EvalError!BigDec {
+        if (args.len != 1) return error.WrongArgCount;
+        var v = try self.evaluate(args[0]);
+        defer v.deinit(self.allocator);
+        const n = v.asNum() orelse return error.InvalidOperand;
+        return n.clone(self.allocator) catch return error.OutOfMemory;
+    }
+
+    fn evalTwoNum(self: *Self, args: []const *Expr) EvalError!struct { a: BigDec, b: BigDec } {
+        if (args.len != 2) return error.WrongArgCount;
+        var av = try self.evaluate(args[0]);
+        errdefer av.deinit(self.allocator);
+        var bv = try self.evaluate(args[1]);
+        defer bv.deinit(self.allocator);
+        const an = av.asNum() orelse return error.InvalidOperand;
+        const bn = bv.asNum() orelse return error.InvalidOperand;
+        const a = an.clone(self.allocator) catch return error.OutOfMemory;
+        errdefer {
+            var tmp = a;
+            tmp.deinit();
+        }
+        const b = bn.clone(self.allocator) catch return error.OutOfMemory;
+        av.deinit(self.allocator);
+        av = .{ .num = BigDec.init(self.allocator) };
+        return .{ .a = a, .b = b };
+    }
+
+    fn mapMath(err: anyerror) EvalError {
+        return switch (err) {
+            error.InvalidOperand => error.InvalidOperand,
+            error.DivisionByZero => error.DivisionByZero,
+            error.NegativeSquareRoot => error.NegativeSquareRoot,
+            error.NonIntegerExponent => error.NonIntegerExponent,
+            else => error.OutOfMemory,
+        };
+    }
+
+    fn isMathlibName(name: []const u8) bool {
+        const names = [_][]const u8{
+            "s",   "c",    "a",    "l",     "e",    "pi",   "j",
+            "sin", "cos",  "tan",  "t",     "atan", "asin", "acos",
+            "log", "log2", "log10",
+        };
+        for (names) |n| {
+            if (std.mem.eql(u8, name, n)) return true;
+        }
+        return false;
     }
 
     /// Call a user-defined function by name with evaluated args.
