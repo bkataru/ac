@@ -10,6 +10,7 @@ const Fixture = struct {
     expected: []const u8,
     mathlib: bool = false,
     rpn: bool = false,
+    repl: bool = false,
 };
 
 const fixtures = [_]Fixture{
@@ -17,6 +18,7 @@ const fixtures = [_]Fixture{
     .{ .name = "scale", .source = @embedFile("scale.ac"), .expected = @embedFile("scale.out") },
     .{ .name = "obase", .source = @embedFile("obase.ac"), .expected = @embedFile("obase.out") },
     .{ .name = "fact", .source = @embedFile("fact.ac"), .expected = @embedFile("fact.out") },
+    .{ .name = "repl_multiline", .source = @embedFile("repl_multiline.ac"), .expected = @embedFile("repl_multiline.out"), .repl = true },
     .{ .name = "mathlib", .source = @embedFile("mathlib.ac"), .expected = @embedFile("mathlib.out"), .mathlib = true },
     .{ .name = "macros", .source = @embedFile("macros.dc"), .expected = @embedFile("macros.out"), .rpn = true },
     .{ .name = "length", .source = @embedFile("length.ac"), .expected = @embedFile("length.out") },
@@ -51,7 +53,11 @@ fn runFixture(f: Fixture) !void {
 
     var buf: [16 * 1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    _ = try ac.processSource(&state, f.source, &w, &dc);
+    const got_flow = if (f.repl)
+        try ac.processReplLines(&state, f.source, &w, &dc)
+    else
+        try ac.processSource(&state, f.source, &w, &dc);
+    _ = got_flow;
 
     const got = try stripCrlf(allocator, w.buffered());
     defer allocator.free(got);

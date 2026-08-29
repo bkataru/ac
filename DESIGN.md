@@ -498,7 +498,7 @@ pub const dc_commands = std.StaticStringMap(DcAction).initComptime(.{
 
 **IMPORTANT**: Zig 0.16.0 uses the new "Writergate" I/O APIs. Buffers are in the interface, not the implementation.
 
-The shipped REPL reads stdin byte-by-byte with `takeByte` (Zig 0.16 Windows EOF workaround). Do not switch it to `takeDelimiterExclusive`. In infix mode, the REPL joins lines while `{` / `}` stay unbalanced (skipping braces inside comments and `[...]` strings) and prints a `..>` continuation prompt. A trailing `\` splices the next line. Meta commands that start with `:` abort a partial define.
+The shipped REPL reads stdin byte-by-byte with `takeByte` (Zig 0.16 Windows EOF workaround). Do not switch it to `takeDelimiterExclusive`. In infix mode, the REPL joins lines while `{` / `}` stay unbalanced (skipping braces inside comments and `[...]` strings) and prints a `..>` continuation prompt. A trailing `\` splices the next line. Meta commands that start with `:` abort a partial define. Assignment statements store the value and do not print it (POSIX bc). GNU bc prints the stored value as an extension.
 
 ```zig
 const std = @import("std");
@@ -745,7 +745,7 @@ INTERACTIVE COMMANDS:
 
 1. **Unit Tests**: Each module has inline tests
 2. **Integration Tests**: Full expression evaluation
-3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, length, arrays, loops, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
+3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
 4. **Fuzz Testing**: Random expression generation
 5. **Benchmarks**: Compare with bc-dc-reference
 

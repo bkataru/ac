@@ -11,6 +11,7 @@ const BigDec = @import("num.zig").BigDec;
 pub const Dc = @import("dc.zig").Dc;
 const FunctionDef = @import("eval.zig").FunctionDef;
 const Stmt = @import("parse.zig").Stmt;
+const Expr = @import("parse.zig").Expr;
 
 pub const version = "0.1.0";
 
@@ -207,34 +208,38 @@ fn runStatement(
     defer evaluator.deinit();
     evaluator.func_stdout = stdout;
 
-    // Expression statements echo their value; other statements are silent.
+    // Expression statements echo their value unless they are assignments.
+    // POSIX bc does not print `x = 3`; GNU bc does as an extension.
     if (stmt.* == .expr) {
+        const silent = isAssignmentExpr(stmt.expr);
         var result = evaluator.evaluate(stmt.expr) catch |err| {
             try printError(state, stdout, err);
             return true;
         };
         defer result.deinit(state.allocator);
 
-        switch (result) {
-            .num => |*n| {
-                if (state.color_enabled) {
-                    if (n.isNegative()) {
-                        try stdout.writeAll(Color.number_neg);
-                    } else {
-                        try stdout.writeAll(Color.number);
+        if (!silent) {
+            switch (result) {
+                .num => |*n| {
+                    if (state.color_enabled) {
+                        if (n.isNegative()) {
+                            try stdout.writeAll(Color.number_neg);
+                        } else {
+                            try stdout.writeAll(Color.number);
+                        }
                     }
-                }
-                try n.format(stdout, state.obase, state.scale);
-                if (state.color_enabled) {
-                    try stdout.writeAll(Color.reset);
-                }
-                try stdout.writeAll("\n");
-                if (state.last) |*last| {
-                    last.deinit();
-                }
-                state.last = try n.clone(state.allocator);
-            },
-            .str => |s| try stdout.writeAll(s),
+                    try n.format(stdout, state.obase, state.scale);
+                    if (state.color_enabled) {
+                        try stdout.writeAll(Color.reset);
+                    }
+                    try stdout.writeAll("\n");
+                    if (state.last) |*last| {
+                        last.deinit();
+                    }
+                    state.last = try n.clone(state.allocator);
+                },
+                .str => |s| try stdout.writeAll(s),
+            }
         }
 
         // The echo block already evaluated and printed this expression;
@@ -552,6 +557,58 @@ fn netBraceDepth(src: []const u8) i32 {
         }
     }
     return depth;
+}
+
+/// True when `expr` is a (possibly compound) assignment. POSIX bc
+/// evaluates these as statements but does not print the stored value.
+fn isAssignmentExpr(expr: *const Expr) bool {
+    return switch (expr.*) {
+        .binary => |b| switch (b.op) {
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign, .pow_assign => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+/// Process source the same way the REPL does: splice trailing `\`,
+/// join lines while braces stay open, then run each complete chunk.
+pub fn processReplLines(
+    state: *State,
+    source: []const u8,
+    stdout: *std.Io.Writer,
+    dc: *Dc,
+) !bool {
+    var acc: std.ArrayList(u8) = .empty;
+    defer acc.deinit(state.allocator);
+    var logical: std.ArrayList(u8) = .empty;
+    defer logical.deinit(state.allocator);
+
+    var it = std.mem.splitScalar(u8, source, '\n');
+    while (it.next()) |raw| {
+        var phys = raw;
+        if (phys.len > 0 and phys[phys.len - 1] == '\r') {
+            phys = phys[0 .. phys.len - 1];
+        }
+        try logical.appendSlice(state.allocator, phys);
+        if (logical.items.len >= 1 and logical.items[logical.items.len - 1] == '\\') {
+            logical.items.len -= 1;
+            continue;
+        }
+        if (acc.items.len > 0) try acc.append(state.allocator, '\n');
+        try acc.appendSlice(state.allocator, logical.items);
+        logical.clearRetainingCapacity();
+        if (state.mode == .infix and netBraceDepth(acc.items) > 0) continue;
+        const keep = try processLine(state, acc.items, stdout, dc);
+        acc.clearRetainingCapacity();
+        if (!keep) return false;
+    }
+    if (logical.items.len > 0) {
+        if (acc.items.len > 0) try acc.append(state.allocator, '\n');
+        try acc.appendSlice(state.allocator, logical.items);
+    }
+    if (acc.items.len > 0) return processLine(state, acc.items, stdout, dc);
+    return true;
 }
 
 fn runRepl(

@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://asciinema.org/a/7i7sBV2TOgTIWg90"><img src="docs/assets/ac-demo.gif" width="820" alt="ac demo: infix arithmetic, scale, hex output, math library, factorial, and RPN macros"></a>
+  <a href="https://asciinema.org/a/7i7sBV2TOgTIWg90"><img src="docs/assets/ac-demo.gif" width="820" alt="ac demo: infix arithmetic, scale, hex output, math library, multiline factorial, and RPN macros"></a>
 </p>
 
 <h1 align="center">ac</h1>
@@ -45,7 +45,7 @@ With no files and no `-e`, `ac` starts a REPL.
 
 ## Infix features
 
-- Variables: `x = 3`, and the special variables `scale`, `ibase`, `obase`
+- Variables: `x = 3` (the assignment does not print), and the special variables `scale`, `ibase`, `obase`
 - Bases 2 to 16 for `ibase` and `obase`
 - `if`, `while`, `for`, and functions with `auto` locals and recursion
 - Arrays: `a[0] = 3`
