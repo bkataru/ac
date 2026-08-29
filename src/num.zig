@@ -364,7 +364,7 @@ pub const BigDec = struct {
         var idx: usize = BASE_DIGS;
         while (idx > 0) {
             idx -= 1;
-            digits[idx] = @intCast(@mod(v, 10));
+            digits[idx] = '0' + @as(u8, @intCast(@mod(v, 10)));
             v = @divTrunc(v, 10);
         }
         try writer.writeAll(&digits);
@@ -1081,6 +1081,38 @@ test "digit counts" {
     defer n.deinit();
     try std.testing.expectEqual(@as(usize, 3), n.sigDigitCount());
 }
+test "format multi-limb integers" {
+    const a = std.testing.allocator;
+    var two = try BigDec.fromInt(a, 2);
+    defer two.deinit();
+    var e64 = try BigDec.fromInt(a, 64);
+    defer e64.deinit();
+    var p = BigDec.init(a);
+    defer p.deinit();
+    try p.pow(two, e64, 0);
+
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try p.format(&w, 10, 20);
+    try std.testing.expectEqualStrings("18446744073709551616", w.buffered());
+
+    var big = try BigDec.parse(a, "123456789013", 10);
+    defer big.deinit();
+    var w2: std.Io.Writer = .fixed(&buf);
+    try big.format(&w2, 10, 20);
+    try std.testing.expectEqualStrings("123456789013", w2.buffered());
+
+    var nbig = try BigDec.parse(a, "-123456789013", 10);
+    defer nbig.deinit();
+    var w3: std.Io.Writer = .fixed(&buf);
+    try nbig.format(&w3, 10, 20);
+    try std.testing.expectEqualStrings("-123456789013", w3.buffered());
+
+    var w4: std.Io.Writer = .fixed(&buf);
+    try p.format(&w4, 16, 20);
+    try std.testing.expectEqualStrings("10000000000000000", w4.buffered());
+}
+
 test "modexp 100^8 mod 7" {
     const a = std.testing.allocator;
     var base = try BigDec.fromInt(a, 100);
