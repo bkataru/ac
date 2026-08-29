@@ -559,6 +559,72 @@ pub const Evaluator = struct {
             defer x.deinit();
             return .{ .num = mathlib.factorial(self.allocator, x) catch |err| return mapMath(err) };
         }
+        if (std.mem.eql(u8, name, "band")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.band(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bor")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.bor(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bxor")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.bxor(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bshl")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.bshl(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bshr")) {
+            var pair = try self.evalTwoNum(args);
+            defer pair.a.deinit();
+            defer pair.b.deinit();
+            return .{ .num = mathlib.bshr(self.allocator, pair.a, pair.b) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bnot8")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.bnotWidth(self.allocator, x, 8) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bnot16")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.bnotWidth(self.allocator, x, 16) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bnot32")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.bnotWidth(self.allocator, x, 32) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "bnot64")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            return .{ .num = mathlib.bnotWidth(self.allocator, x, 64) catch |err| return mapMath(err) };
+        }
+        if (std.mem.eql(u8, name, "rand")) {
+            if (args.len != 0) return error.WrongArgCount;
+            const n = self.state.nextRand(32768);
+            return .{ .num = BigDec.fromInt(self.allocator, @intCast(n)) catch return error.OutOfMemory };
+        }
+        if (std.mem.eql(u8, name, "irand")) {
+            var x = try self.evalOneNum(args);
+            defer x.deinit();
+            if (x.fracDigitCount() != 0 or x.neg or x.isZero()) return error.InvalidOperand;
+            const f = x.toF64() catch return error.InvalidOperand;
+            if (!std.math.isFinite(f) or f > 0x1_0000_0000 or @floor(f) != f) return error.InvalidOperand;
+            const bound: u64 = @intFromFloat(f);
+            if (bound == 0) return error.InvalidOperand;
+            const r = self.state.nextRand(bound);
+            return .{ .num = BigDec.fromInt(self.allocator, @intCast(r)) catch return error.OutOfMemory };
+        }
 
         if (isMathlibName(name) and !self.state.mathlib_loaded) {
             return error.UndefinedFunction;
@@ -1270,5 +1336,61 @@ test "return inside while returns immediately" {
     if (flow.ret) |v| {
         var vv = v;
         vv.deinit(allocator);
+    }
+}
+
+
+fn evalPrinted(state: *State, src: []const u8) ![]u8 {
+    var lexer = Lexer.init(src);
+    var parser = Parser.init(&lexer, state.allocator);
+    defer parser.deinit();
+    const stmt = (try parser.parseTopLevel()).?;
+    defer {
+        stmt.deinit(state.allocator);
+        state.allocator.destroy(stmt);
+    }
+    const expr = switch (stmt.*) {
+        .expr => |e| e,
+        else => return error.InvalidOperand,
+    };
+    var evaluator = Evaluator.init(state);
+    var v = try evaluator.evaluate(expr);
+    defer v.deinit(state.allocator);
+    const n = v.asNum() orelse return error.InvalidOperand;
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try n.format(&w, 10, state.scale);
+    return state.allocator.dupe(u8, w.buffered());
+}
+
+test "rand repeats after seed" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.seedRng(1);
+    const a = try evalPrinted(&state, "rand()");
+    defer allocator.free(a);
+    const b = try evalPrinted(&state, "rand()");
+    defer allocator.free(b);
+    state.seedRng(1);
+    const c = try evalPrinted(&state, "rand()");
+    defer allocator.free(c);
+    try std.testing.expectEqualStrings(a, c);
+}
+
+test "irand stays in range" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.seedRng(7);
+    var i: usize = 0;
+    while (i < 20) : (i += 1) {
+        const out = try evalPrinted(&state, "irand(10)");
+        defer allocator.free(out);
+        const trimmed = std.mem.trim(u8, out, " \t\r\n");
+        const n = try std.fmt.parseInt(i64, trimmed, 10);
+        try std.testing.expect(n >= 0 and n < 10);
     }
 }

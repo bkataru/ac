@@ -1,6 +1,6 @@
 //! bc -l math library: pi, ln, exp, sin, cos, atan, Bessel j(n,x),
 //! plus extras (tan, asin, acos, log*) and always-on helpers
-//! (abs, ceil, floor, round, gcd, lcm, factorial).
+//! (abs, ceil, floor, round, gcd, lcm, factorial, bitwise).
 //!
 //! All series are evaluated at internal precision p = scale + GUARD
 //! digits; final results are truncated to `scale`. Terms iterate with
@@ -828,6 +828,165 @@ pub fn factorial(alloc: Allocator, n: BigDec) !BigDec {
     return acc;
 }
 
+
+const max_bit_len: usize = 1_000_000;
+
+fn requireNonNegInt(x: BigDec) !void {
+    if (x.fracDigitCount() != 0 or isNeg(x)) return error.InvalidOperand;
+}
+
+fn shiftAmount(b: BigDec) !u32 {
+    try requireNonNegInt(b);
+    const f = b.toF64() catch return error.InvalidOperand;
+    if (!std.math.isFinite(f) or f > max_bit_len or @floor(f) != f) return error.InvalidOperand;
+    return @intFromFloat(f);
+}
+
+fn toWords(alloc: Allocator, x: BigDec) ![]u32 {
+    try requireNonNegInt(x);
+    var n = try absOf(alloc, x);
+    defer n.deinit();
+    var words: std.ArrayList(u32) = .empty;
+    errdefer words.deinit(alloc);
+    if (n.isZero()) {
+        try words.append(alloc, 0);
+        return words.toOwnedSlice(alloc);
+    }
+    var two32 = try BigDec.fromInt(alloc, 4294967296);
+    defer two32.deinit();
+    var guard: usize = 0;
+    while (!n.isZero()) {
+        guard += 1;
+        if (guard > max_bit_len / 32 + 1) return error.InvalidOperand;
+        var rem = BigDec.init(alloc);
+        defer rem.deinit();
+        try rem.mod(n, two32, 0);
+        const mag = rem.toF64() catch return error.InvalidOperand;
+        try words.append(alloc, @intFromFloat(mag));
+        var q = BigDec.init(alloc);
+        errdefer q.deinit();
+        try q.div(n, two32, 0);
+        n.deinit();
+        n = q;
+        q = BigDec.init(alloc);
+    }
+    return words.toOwnedSlice(alloc);
+}
+
+fn fromWords(alloc: Allocator, words: []const u32) !BigDec {
+    var acc = try BigDec.fromInt(alloc, 0);
+    errdefer acc.deinit();
+    if (words.len == 0) return acc;
+    var two32 = try BigDec.fromInt(alloc, 4294967296);
+    defer two32.deinit();
+    var i = words.len;
+    while (i > 0) {
+        i -= 1;
+        var shifted = BigDec.init(alloc);
+        errdefer shifted.deinit();
+        try shifted.mul(acc, two32, 0);
+        var w = try BigDec.fromInt(alloc, words[i]);
+        defer w.deinit();
+        var next = BigDec.init(alloc);
+        errdefer next.deinit();
+        try next.add(shifted, w, 0);
+        shifted.deinit();
+        shifted = BigDec.init(alloc);
+        acc.deinit();
+        acc = next;
+        next = BigDec.init(alloc);
+    }
+    return acc;
+}
+
+const BitOp = enum { and_, or_, xor };
+
+fn bitBin(alloc: Allocator, a: BigDec, b: BigDec, op: BitOp) !BigDec {
+    const aw = try toWords(alloc, a);
+    defer alloc.free(aw);
+    const bw = try toWords(alloc, b);
+    defer alloc.free(bw);
+    const n = @max(aw.len, bw.len);
+    const out = try alloc.alloc(u32, n);
+    defer alloc.free(out);
+    @memset(out, 0);
+    @memcpy(out[0..aw.len], aw);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const wv: u32 = if (i < bw.len) bw[i] else 0;
+        out[i] = switch (op) {
+            .and_ => out[i] & wv,
+            .or_ => out[i] | wv,
+            .xor => out[i] ^ wv,
+        };
+    }
+    return fromWords(alloc, out);
+}
+
+pub fn band(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    return bitBin(alloc, a, b, .and_);
+}
+
+pub fn bor(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    return bitBin(alloc, a, b, .or_);
+}
+
+pub fn bxor(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    return bitBin(alloc, a, b, .xor);
+}
+
+pub fn bnotWidth(alloc: Allocator, x: BigDec, bits: u16) !BigDec {
+    const words = try toWords(alloc, x);
+    defer alloc.free(words);
+    const nwords: usize = (@as(usize, bits) + 31) / 32;
+    const out = try alloc.alloc(u32, nwords);
+    defer alloc.free(out);
+    @memset(out, 0);
+    const copy = @min(words.len, nwords);
+    @memcpy(out[0..copy], words[0..copy]);
+    for (out) |*w| w.* = ~w.*;
+    if (bits % 32 != 0) {
+        const rem: u5 = @intCast(bits % 32);
+        const mask: u32 = (@as(u32, 1) << rem) - 1;
+        out[nwords - 1] &= mask;
+    }
+    return fromWords(alloc, out);
+}
+
+pub fn bshl(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    try requireNonNegInt(a);
+    const sh = try shiftAmount(b);
+    if (sh == 0) return a.clone(alloc);
+    var two = try BigDec.fromInt(alloc, 2);
+    defer two.deinit();
+    var shift_exp = try BigDec.fromInt(alloc, @as(i64, sh));
+    defer shift_exp.deinit();
+    var p2 = BigDec.init(alloc);
+    defer p2.deinit();
+    try p2.pow(two, shift_exp, 0);
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.mul(a, p2, 0);
+    return out;
+}
+
+pub fn bshr(alloc: Allocator, a: BigDec, b: BigDec) !BigDec {
+    try requireNonNegInt(a);
+    const sh = try shiftAmount(b);
+    if (sh == 0) return a.clone(alloc);
+    var two = try BigDec.fromInt(alloc, 2);
+    defer two.deinit();
+    var shift_exp = try BigDec.fromInt(alloc, @as(i64, sh));
+    defer shift_exp.deinit();
+    var p2 = BigDec.init(alloc);
+    defer p2.deinit();
+    try p2.pow(two, shift_exp, 0);
+    var out = BigDec.init(alloc);
+    errdefer out.deinit();
+    try out.div(a, p2, 0);
+    return out;
+}
+
 /// tan(x) = sin(x) / cos(x).
 pub fn tan(alloc: Allocator, x: BigDec, scale: usize) !BigDec {
     const p = prec(scale);
@@ -1118,3 +1277,47 @@ test "log2 log10 tan asin acos" {
     defer as0.deinit();
     try expectFmt(as0, 2, "0");
 }
+
+
+test "bitwise band bor bxor bnot shifts" {
+    const alloc = std.testing.allocator;
+    var twelve = try BigDec.fromInt(alloc, 12);
+    defer twelve.deinit();
+    var ten = try BigDec.fromInt(alloc, 10);
+    defer ten.deinit();
+    var a = try band(alloc, twelve, ten);
+    defer a.deinit();
+    try expectFmt(a, 0, "8");
+    var o = try bor(alloc, twelve, ten);
+    defer o.deinit();
+    try expectFmt(o, 0, "14");
+    var x = try bxor(alloc, twelve, ten);
+    defer x.deinit();
+    try expectFmt(x, 0, "6");
+
+    var zero = try BigDec.fromInt(alloc, 0);
+    defer zero.deinit();
+    var one = try BigDec.fromInt(alloc, 1);
+    defer one.deinit();
+    var n8 = try bnotWidth(alloc, zero, 8);
+    defer n8.deinit();
+    try expectFmt(n8, 0, "255");
+    var n8b = try bnotWidth(alloc, one, 8);
+    defer n8b.deinit();
+    try expectFmt(n8b, 0, "254");
+    var n32 = try bnotWidth(alloc, zero, 32);
+    defer n32.deinit();
+    try expectFmt(n32, 0, "4294967295");
+
+    var eight = try BigDec.fromInt(alloc, 8);
+    defer eight.deinit();
+    var sh = try bshl(alloc, one, eight);
+    defer sh.deinit();
+    try expectFmt(sh, 0, "256");
+    var two56 = try BigDec.fromInt(alloc, 256);
+    defer two56.deinit();
+    var rs = try bshr(alloc, two56, eight);
+    defer rs.deinit();
+    try expectFmt(rs, 0, "1");
+}
+

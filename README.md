@@ -49,9 +49,9 @@ With no files and no `-e`, `ac` starts a REPL.
 - Bases 2 to 16 for `ibase` and `obase`
 - `if`, `while`, `for`, and functions with `auto` locals and recursion
 - Arrays: `a[0] = 3`
-- Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`
+- Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`, `floor`, `round`, `gcd`, `lcm`, `factorial`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`, `log10`, `e`, `pi()`, `j(n, x)`. `-l` also sets `scale = 20`.
-- REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`.
+- REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`. The input line is colored.
 
 Examples:
 
@@ -96,7 +96,7 @@ Example:
 
 `ac` runs the POSIX scripts that matter. It is not a GNU bc/dc clone.
 
-- GNU-only commands do not exist here: `<<`, `>>`, `$`, `@`, `&&`, `||`, `rand`
+- GNU-only commands do not exist here: `<<`, `>>`, `$`, `@`, `&&`, `||`
 - `|` is a GNU extra, but `ac` has it
 - `Z` and `X` count digits without trailing zeros: `0.0000` has `Z = 1`. GNU `dc` says `4`.
 

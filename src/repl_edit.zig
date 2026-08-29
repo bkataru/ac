@@ -20,6 +20,7 @@ pub const Editor = struct {
     io: ?Io = null,
     extra_words: std.ArrayList([]const u8) = .empty,
     mathlib: bool = false,
+    color: bool = true,
 
     pub fn init(allocator: Allocator) Editor {
         return .{ .allocator = allocator };
@@ -210,31 +211,31 @@ pub const Editor = struct {
                     line.clearRetainingCapacity();
                     cursor = 0;
                     hist_pos = self.lines.items.len;
-                    redraw(stdout, prompt, line.items, cursor);
+                    self.redraw(stdout, prompt, line.items, cursor);
                 },
                 0x7f, 0x08 => { // Backspace
                     if (cursor > 0) {
                         _ = line.orderedRemove(cursor - 1);
                         cursor -= 1;
-                        redraw(stdout, prompt, line.items, cursor);
+                        self.redraw(stdout, prompt, line.items, cursor);
                     }
                 },
                 0x01 => { // Ctrl-A
                     cursor = 0;
-                    redraw(stdout, prompt, line.items, cursor);
+                    self.redraw(stdout, prompt, line.items, cursor);
                 },
                 0x05 => { // Ctrl-E
                     cursor = line.items.len;
-                    redraw(stdout, prompt, line.items, cursor);
+                    self.redraw(stdout, prompt, line.items, cursor);
                 },
                 0x0b => { // Ctrl-K
                     line.shrinkRetainingCapacity(cursor);
-                    redraw(stdout, prompt, line.items, cursor);
+                    self.redraw(stdout, prompt, line.items, cursor);
                 },
                 0x15 => { // Ctrl-U
                     line.clearRetainingCapacity();
                     cursor = 0;
-                    redraw(stdout, prompt, line.items, cursor);
+                    self.redraw(stdout, prompt, line.items, cursor);
                 },
                 '\t' => {
                     self.completeToken(&line, &cursor, stdout, prompt);
@@ -244,7 +245,7 @@ pub const Editor = struct {
                     if (n1 == '[') {
                         const n2 = stdin.takeByte() catch continue;
                         self.handleArrow(n2, &line, &cursor, &hist_pos, &saved_draft);
-                        redraw(stdout, prompt, line.items, cursor);
+                        self.redraw(stdout, prompt, line.items, cursor);
                     } else if (n1 == 'O') {
                         _ = stdin.takeByte() catch {};
                     }
@@ -260,14 +261,14 @@ pub const Editor = struct {
                     };
                     if (mapped != 0) {
                         self.handleArrow(mapped, &line, &cursor, &hist_pos, &saved_draft);
-                        redraw(stdout, prompt, line.items, cursor);
+                        self.redraw(stdout, prompt, line.items, cursor);
                     }
                 },
                 else => {
                     if (ch >= 32 and line.items.len < buf.len) {
                         line.insert(self.allocator, cursor, ch) catch continue;
                         cursor += 1;
-                        redraw(stdout, prompt, line.items, cursor);
+                        self.redraw(stdout, prompt, line.items, cursor);
                     }
                 },
             }
@@ -336,7 +337,7 @@ pub const Editor = struct {
                 line.insert(self.allocator, cursor.*, ch) catch return;
                 cursor.* += 1;
             }
-            redraw(stdout, prompt, line.items, cursor.*);
+            self.redraw(stdout, prompt, line.items, cursor.*);
             return;
         }
         if (matches.items.len == 1) return;
@@ -347,7 +348,7 @@ pub const Editor = struct {
         }
         stdout.writeAll("\r\n") catch {};
         stdout.flush() catch {};
-        redraw(stdout, prompt, line.items, cursor.*);
+        self.redraw(stdout, prompt, line.items, cursor.*);
     }
 
     pub fn collectMatches(self: *const Editor, prefix: []const u8, out: *std.ArrayList([]const u8)) !void {
@@ -368,6 +369,8 @@ pub const Editor = struct {
 const builtin_words = [_][]const u8{
     "sqrt", "length", "scale", "read", "abs", "ceil", "floor", "round",
     "gcd", "lcm", "factorial", "ibase", "obase", "last",
+    "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64",
+    "bshl", "bshr", "rand", "irand",
 };
 const mathlib_words = [_][]const u8{
     "s", "c", "a", "l", "e", "pi", "j", "sin", "cos", "tan", "t",
@@ -376,6 +379,163 @@ const mathlib_words = [_][]const u8{
 const command_words = [_][]const u8{
     ":help", ":h", ":?", ":quit", ":q", ":rpn", ":dc", ":infix", ":bc", ":vars", ":clear",
 };
+
+
+pub const SpanKind = enum { plain, number, operator, keyword, comment, string };
+
+const ansi_reset = "\x1b[0m";
+const ansi_number = "\x1b[33m";
+const ansi_operator = "\x1b[35m";
+const ansi_keyword = "\x1b[34;1m";
+const ansi_comment = "\x1b[90m";
+const ansi_string = "\x1b[32m";
+
+const highlight_keywords = [_][]const u8{
+    "if", "else", "while", "for", "define", "return", "break", "continue",
+    "quit", "halt", "print", "sqrt", "length", "scale", "ibase", "obase", "last", "auto",
+    "abs", "ceil", "floor", "round", "gcd", "lcm", "factorial",
+    "band", "bor", "bxor", "bnot8", "bnot16", "bnot32", "bnot64", "bshl", "bshr",
+    "rand", "irand", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log2", "log10", "pi",
+};
+
+const Span = struct { kind: SpanKind, end: usize };
+
+fn isIdentStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_';
+}
+
+fn isIdentCont(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+fn isKeywordName(name: []const u8) bool {
+    for (highlight_keywords) |k| {
+        if (std.mem.eql(u8, name, k)) return true;
+    }
+    return false;
+}
+
+fn isOperatorChar(c: u8) bool {
+    return switch (c) {
+        '+', '-', '*', '/', '%', '^', '=', '<', '>', '!', '(', ')', '{', '}', ']', ';', ',', '\\' => true,
+        else => false,
+    };
+}
+
+fn isArrayIndexOpen(line: []const u8, pos: usize) bool {
+    var i = pos;
+    while (i > 0) {
+        i -= 1;
+        const ch = line[i];
+        if (ch == ' ' or ch == '\t') continue;
+        return isIdentCont(ch) or ch == ']';
+    }
+    return false;
+}
+
+fn nextSpan(line: []const u8, start: usize) Span {
+    if (start >= line.len) return .{ .kind = .plain, .end = start };
+    const c = line[start];
+    if (c == ' ' or c == '\t') {
+        var i = start + 1;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+        return .{ .kind = .plain, .end = i };
+    }
+    if (c == '#') return .{ .kind = .comment, .end = line.len };
+    if (c == '/' and start + 1 < line.len and line[start + 1] == '*') {
+        var i = start + 2;
+        while (i + 1 < line.len) : (i += 1) {
+            if (line[i] == '*' and line[i + 1] == '/') return .{ .kind = .comment, .end = i + 2 };
+        }
+        return .{ .kind = .comment, .end = line.len };
+    }
+    if (c == '[') {
+        if (isArrayIndexOpen(line, start)) {
+            return .{ .kind = .operator, .end = start + 1 };
+        }
+        var depth: usize = 1;
+        var i = start + 1;
+        while (i < line.len) : (i += 1) {
+            if (line[i] == '[') depth += 1;
+            if (line[i] == ']') {
+                depth -= 1;
+                if (depth == 0) return .{ .kind = .string, .end = i + 1 };
+            }
+        }
+        return .{ .kind = .string, .end = line.len };
+    }
+    if (c == ':') {
+        var i = start + 1;
+        while (i < line.len and isIdentCont(line[i])) i += 1;
+        return .{ .kind = .keyword, .end = @max(i, start + 1) };
+    }
+    if (std.ascii.isDigit(c) or (c == '.' and start + 1 < line.len and std.ascii.isDigit(line[start + 1]))) {
+        var i = start + 1;
+        while (i < line.len) : (i += 1) {
+            const d = line[i];
+            const ok = std.ascii.isDigit(d) or d == '.' or
+                (d >= 'A' and d <= 'F') or (d >= 'a' and d <= 'f');
+            if (!ok) break;
+        }
+        return .{ .kind = .number, .end = i };
+    }
+    if (isIdentStart(c)) {
+        var i = start + 1;
+        while (i < line.len and isIdentCont(line[i])) i += 1;
+        const name = line[start..i];
+        return .{ .kind = if (isKeywordName(name)) .keyword else .plain, .end = i };
+    }
+    if (start + 1 < line.len) {
+        const two = line[start .. start + 2];
+        const doubles = [_][]const u8{ "++", "--", "+=", "-=", "*=", "/=", "%=", "^=", "==", "!=", "<=", ">=" };
+        for (doubles) |d| {
+            if (std.mem.eql(u8, two, d)) return .{ .kind = .operator, .end = start + 2 };
+        }
+    }
+    if (isOperatorChar(c)) return .{ .kind = .operator, .end = start + 1 };
+    return .{ .kind = .plain, .end = start + 1 };
+}
+
+fn ansiOf(kind: SpanKind) []const u8 {
+    return switch (kind) {
+        .plain => "",
+        .number => ansi_number,
+        .operator => ansi_operator,
+        .keyword => ansi_keyword,
+        .comment => ansi_comment,
+        .string => ansi_string,
+    };
+}
+
+fn writeHighlighted(stdout: *std.Io.Writer, line: []const u8) void {
+    var i: usize = 0;
+    var prev: ?SpanKind = null;
+    while (i < line.len) {
+        var span = nextSpan(line, i);
+        if (span.end <= i) span.end = i + 1;
+        const code = ansiOf(span.kind);
+        if (prev == null or prev.? != span.kind) {
+            stdout.writeAll(ansi_reset) catch {};
+            if (code.len > 0) stdout.writeAll(code) catch {};
+            prev = span.kind;
+        }
+        stdout.writeAll(line[i..span.end]) catch {};
+        i = span.end;
+    }
+    stdout.writeAll(ansi_reset) catch {};
+}
+
+pub fn spanKind(line: []const u8, index: usize) SpanKind {
+    if (index >= line.len) return .plain;
+    var i: usize = 0;
+    while (i <= index and i < line.len) {
+        var span = nextSpan(line, i);
+        if (span.end <= i) span.end = i + 1;
+        if (index < span.end) return span.kind;
+        i = span.end;
+    }
+    return .plain;
+}
 
 fn wordLess(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
@@ -417,10 +577,14 @@ fn replaceLine(allocator: Allocator, line: *std.ArrayList(u8), src: []const u8) 
     line.appendSlice(allocator, src) catch {};
 }
 
-fn redraw(stdout: *std.Io.Writer, prompt: []const u8, line: []const u8, cursor: usize) void {
+fn redraw(self: *const Editor, stdout: *std.Io.Writer, prompt: []const u8, line: []const u8, cursor: usize) void {
     stdout.writeAll("\r") catch {};
     stdout.writeAll(prompt) catch {};
-    stdout.writeAll(line) catch {};
+    if (self.color) {
+        writeHighlighted(stdout, line);
+    } else {
+        stdout.writeAll(line) catch {};
+    }
     stdout.writeAll("\x1b[K") catch {};
     if (line.len > cursor) {
         stdout.print("\x1b[{d}D", .{line.len - cursor}) catch {};
@@ -503,4 +667,23 @@ test "tab completion matches names and commands" {
     try std.testing.expectEqualStrings("ab", commonPrefix(&.{ "abs", "abc" }));
     try std.testing.expectEqualStrings(":he", tokenBefore(":help", 3));
     try std.testing.expectEqualStrings("sq", tokenBefore("1+sq", 4));
+}
+
+test "syntax highlighting kinds" {
+    try std.testing.expectEqual(SpanKind.keyword, spanKind("if (1)", 0));
+    try std.testing.expectEqual(SpanKind.operator, spanKind("if (1)", 3));
+    try std.testing.expectEqual(SpanKind.number, spanKind("if (1)", 4));
+    try std.testing.expectEqual(SpanKind.number, spanKind("1+2", 0));
+    try std.testing.expectEqual(SpanKind.operator, spanKind("1+2", 1));
+    try std.testing.expectEqual(SpanKind.number, spanKind("1+2", 2));
+    try std.testing.expectEqual(SpanKind.comment, spanKind("1 # hi", 2));
+    try std.testing.expectEqual(SpanKind.comment, spanKind("/* x */ 1", 0));
+    try std.testing.expectEqual(SpanKind.string, spanKind("[2 3 +]", 0));
+    try std.testing.expectEqual(SpanKind.string, spanKind("[2 3 +]", 6));
+    try std.testing.expectEqual(SpanKind.operator, spanKind("a[0]", 1));
+    try std.testing.expectEqual(SpanKind.number, spanKind("a[0]", 2));
+    try std.testing.expectEqual(SpanKind.keyword, spanKind(":help", 0));
+    try std.testing.expectEqual(SpanKind.keyword, spanKind("define f()", 0));
+    try std.testing.expectEqual(SpanKind.plain, spanKind("answer", 0));
+    try std.testing.expectEqual(SpanKind.operator, spanKind("x += 1", 2));
 }

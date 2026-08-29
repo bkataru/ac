@@ -38,6 +38,7 @@ pub const Color = struct {
     pub const operator = "\x1b[35m"; // magenta
     pub const err = "\x1b[31;1m"; // bold red
     pub const keyword = "\x1b[34;1m"; // bold blue
+    pub const string = "\x1b[32m"; // green
     pub const comment = "\x1b[90m"; // gray
 };
 
@@ -57,6 +58,8 @@ pub const State = struct {
     color_enabled: bool = true,
     interactive: bool = true,
     mathlib_loaded: bool = false,
+    prng: std.Random.DefaultPrng = undefined,
+    prng_seeded: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) State {
         return .{
@@ -103,6 +106,21 @@ pub const State = struct {
         if (self.last) |*last| {
             last.deinit();
         }
+    }
+
+    pub fn seedRng(self: *State, seed: u64) void {
+        self.prng = std.Random.DefaultPrng.init(seed);
+        self.prng_seeded = true;
+    }
+
+    fn ensureRng(self: *State) void {
+        if (self.prng_seeded) return;
+        self.seedRng(@intFromPtr(self) *% 0x9E3779B97F4A7C15);
+    }
+
+    pub fn nextRand(self: *State, less_than: u64) u64 {
+        self.ensureRng();
+        return self.prng.random().uintLessThan(u64, less_than);
     }
 };
 
@@ -444,11 +462,15 @@ fn printHelp(stdout: anytype, color: bool) !void {
         \\  sqrt(x)           Square root
         \\  abs ceil floor round
         \\  gcd lcm factorial
+        \\  band bor bxor bshl bshr
+        \\  bnot8 bnot16 bnot32 bnot64
+        \\  rand() irand(n)
         \\  -l: s c a l e j pi
         \\      sin cos tan atan asin acos
         \\      log log2 log10
         \\  Up/Down arrows recall previous lines
         \\  Tab completes names and :commands
+        \\  The input line is colored
         \\
     , .{ c, r, version, c, r, c, r, c, r, c, r, c, r });
 }
@@ -745,6 +767,11 @@ pub fn main(init: std.process.Init) !void {
 
     var state = State.init(allocator);
     defer state.deinit();
+    {
+        var seed: u64 = undefined;
+        io.random(std.mem.asBytes(&seed));
+        state.seedRng(seed);
+    }
 
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [4096]u8 = undefined;
@@ -915,6 +942,7 @@ pub fn main(init: std.process.Init) !void {
 fn fillCompleteWords(state: *State, editor: *repl_edit.Editor) void {
     editor.clearExtra();
     editor.mathlib = state.mathlib_loaded;
+    editor.color = state.color_enabled;
     var it = state.variables.iterator();
     while (it.next()) |entry| {
         editor.addExtra(entry.key_ptr.*) catch {};

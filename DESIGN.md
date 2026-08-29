@@ -32,7 +32,7 @@ ac/
     eval.zig         # AST evaluator for infix mode
     dc.zig           # RPN (dc) evaluator and macros
     mathlib.zig      # Hardcoded -l math library (s, c, a, l, e, pi, j) plus extras
-    repl_edit.zig    # Interactive line editing and ~/.ac_history
+    repl_edit.zig    # Interactive line editing, ~/.ac_history, Tab, syntax colors
     # (POSIX fixtures live in tests/posix/, run via tests/posix/runner.zig)
   tests/posix/       # Small POSIX fixture pack (.ac/.dc + expected .out)
   build.zig
@@ -728,14 +728,14 @@ INTERACTIVE COMMANDS:
 
 ### Phase 5: TUI Polish
 - [x] ANSI color output (disabled when stdin is not a tty; --no-color)
-- [ ] Syntax highlighting
+- [x] Syntax highlighting (REPL input: keywords, numbers, operators, comments, strings)
 - [x] Line editing with history (`~/.ac_history`; arrows, backspace)
 - [x] Tab completion
 - [x] Better error messages with context (caret diagnostics)
 
 ### Phase 6: Extensions
-- [ ] Bitwise operations
-- [ ] Random number generation
+- [x] Bitwise operations
+- [x] Random number generation
 - [x] Modular exponentiation (dc `|`)
 - [ ] Scientific/engineering notation I/O
 - [x] Strings as bounded values (assign/print/dc stack; no arithmetic)
