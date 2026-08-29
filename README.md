@@ -51,7 +51,7 @@ With no files and no `-e`, `ac` starts a REPL.
 - Arrays: `a[0] = 3`. A bare name prints the array as `[3, 4]`.
 - Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`/`ceil(x,p)`, `floor`, `round`/`r(x,p)`, `gcd`, `lcm`, `factorial`/`f`, `perm`, `comb`, `max`, `min`, `root`, `cbrt`, `modexp`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`, `sci(x)`, `eng(x)`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`/`l2`, `log10`/`l10`, `e`, `pi()`/`pi(s)`, `j(n, x)`. `-l` also sets `scale = 20`.
-- REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`. The input line is colored.
+- REPL: Up/Down arrows recall previous lines. Tab completes names and `:commands`. History is `~/.ac_history`. The input line is colored. Nested continuation lines indent by brace depth, like the Python REPL.
 
 Examples:
 

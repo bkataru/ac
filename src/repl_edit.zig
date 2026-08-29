@@ -9,6 +9,8 @@ const File = std.Io.File;
 
 const max_history: usize = 1000;
 const max_history_bytes: usize = 1 * 1024 * 1024;
+/// Spaces per brace level on a continuation line (Python-style).
+pub const indent_width: usize = 4;
 
 pub const Editor = struct {
     allocator: Allocator,
@@ -148,8 +150,9 @@ pub const Editor = struct {
         _ = set.operate(io, self.stdin_file orelse return) catch {};
     }
 
-    /// Read one physical line. Prints `prompt`. Sets `eof_out` at stream end.
-    /// Returns the byte count copied into `buf`.
+    /// Read one physical line. Prints `prompt` and optional `initial`
+    /// indent. Sets `eof_out` at stream end. Returns the byte count
+    /// copied into `buf` (including `initial` unless the user deleted it).
     pub fn readLine(
         self: *Editor,
         stdin: *std.Io.Reader,
@@ -158,13 +161,16 @@ pub const Editor = struct {
         buf: []u8,
         eof_out: *bool,
         stderr: *std.Io.Writer,
+        initial: []const u8,
     ) usize {
         if (!self.raw) {
             stdout.writeAll(prompt) catch {};
+            stdout.writeAll(initial) catch {};
             stdout.flush() catch {};
-            return readCooked(stdin, buf, eof_out, stderr);
+            const n = readCooked(stdin, buf, eof_out, stderr);
+            return prependBytes(buf, n, initial);
         }
-        return self.readLineRaw(stdin, stdout, prompt, buf, eof_out);
+        return self.readLineRaw(stdin, stdout, prompt, buf, eof_out, initial);
     }
 
     fn readLineRaw(
@@ -174,6 +180,7 @@ pub const Editor = struct {
         prompt: []const u8,
         buf: []u8,
         eof_out: *bool,
+        initial: []const u8,
     ) usize {
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.allocator);
@@ -182,8 +189,12 @@ pub const Editor = struct {
         var saved_draft: ?[]u8 = null;
         defer if (saved_draft) |s| self.allocator.free(s);
 
-        stdout.writeAll(prompt) catch {};
-        stdout.flush() catch {};
+        if (initial.len > 0) {
+            const seed = @min(initial.len, buf.len);
+            line.appendSlice(self.allocator, initial[0..seed]) catch {};
+            cursor = line.items.len;
+        }
+        self.redraw(stdout, prompt, line.items, cursor);
 
         while (true) {
             const ch = stdin.takeByte() catch {
@@ -200,23 +211,28 @@ pub const Editor = struct {
                     return n;
                 },
                 0x04 => { // Ctrl-D
-                    if (line.items.len == 0) {
+                    if (allSpaces(line.items)) {
                         eof_out.* = true;
                         stdout.writeAll("\r\n") catch {};
                         stdout.flush() catch {};
                         return 0;
                     }
                 },
-                0x03 => { // Ctrl-C: drop the line
-                    line.clearRetainingCapacity();
-                    cursor = 0;
+                0x03 => { // Ctrl-C: drop the line, keep default indent
+                    restoreInitial(&line, self.allocator, initial);
+                    cursor = line.items.len;
                     hist_pos = self.lines.items.len;
                     self.redraw(stdout, prompt, line.items, cursor);
                 },
-                0x7f, 0x08 => { // Backspace
+                0x7f, 0x08 => { // Backspace (a full indent step on a blank prefix)
                     if (cursor > 0) {
-                        _ = line.orderedRemove(cursor - 1);
-                        cursor -= 1;
+                        const tab_stop = cursor >= indent_width and cursor % indent_width == 0 and allSpaces(line.items[0..cursor]);
+                        const drop: usize = if (tab_stop) indent_width else 1;
+                        var i: usize = 0;
+                        while (i < drop) : (i += 1) {
+                            _ = line.orderedRemove(cursor - 1);
+                            cursor -= 1;
+                        }
                         self.redraw(stdout, prompt, line.items, cursor);
                     }
                 },
@@ -232,13 +248,22 @@ pub const Editor = struct {
                     line.shrinkRetainingCapacity(cursor);
                     self.redraw(stdout, prompt, line.items, cursor);
                 },
-                0x15 => { // Ctrl-U
-                    line.clearRetainingCapacity();
-                    cursor = 0;
+                0x15 => { // Ctrl-U: clear to the default indent
+                    restoreInitial(&line, self.allocator, initial);
+                    cursor = line.items.len;
                     self.redraw(stdout, prompt, line.items, cursor);
                 },
                 '\t' => {
-                    self.completeToken(&line, &cursor, stdout, prompt);
+                    if (allSpaces(line.items[0..cursor])) {
+                        var i: usize = 0;
+                        while (i < indent_width and line.items.len < buf.len) : (i += 1) {
+                            line.insert(self.allocator, cursor, ' ') catch break;
+                            cursor += 1;
+                        }
+                        self.redraw(stdout, prompt, line.items, cursor);
+                    } else {
+                        self.completeToken(&line, &cursor, stdout, prompt);
+                    }
                 },
                 0x1b => {
                     const n1 = stdin.takeByte() catch continue;
@@ -266,9 +291,19 @@ pub const Editor = struct {
                 },
                 else => {
                     if (ch >= 32 and line.items.len < buf.len) {
-                        line.insert(self.allocator, cursor, ch) catch continue;
-                        cursor += 1;
-                        self.redraw(stdout, prompt, line.items, cursor);
+                        if (ch == '}' and allSpaces(line.items)) {
+                            // One indent step out so `}` lines up with its `{`.
+                            var i: usize = 0;
+                            while (i < indent_width and cursor > 0 and line.items[cursor - 1] == ' ') : (i += 1) {
+                                _ = line.orderedRemove(cursor - 1);
+                                cursor -= 1;
+                            }
+                        }
+                        if (line.items.len < buf.len) {
+                            line.insert(self.allocator, cursor, ch) catch continue;
+                            cursor += 1;
+                            self.redraw(stdout, prompt, line.items, cursor);
+                        }
                     }
                 },
             }
@@ -611,6 +646,28 @@ fn replaceLine(allocator: Allocator, line: *std.ArrayList(u8), src: []const u8) 
     line.appendSlice(allocator, src) catch {};
 }
 
+fn allSpaces(s: []const u8) bool {
+    for (s) |c| {
+        if (c != ' ' and c != '\t') return false;
+    }
+    return true;
+}
+
+fn restoreInitial(line: *std.ArrayList(u8), allocator: Allocator, initial: []const u8) void {
+    line.clearRetainingCapacity();
+    line.appendSlice(allocator, initial) catch {};
+}
+
+/// Insert `prefix` at the start of `buf[0..n]`. Truncates if the buffer is full.
+pub fn prependBytes(buf: []u8, n: usize, prefix: []const u8) usize {
+    if (prefix.len == 0) return n;
+    const add = @min(prefix.len, buf.len);
+    const keep = @min(n, buf.len - add);
+    if (keep > 0) std.mem.copyBackwards(u8, buf[add .. add + keep], buf[0..keep]);
+    @memcpy(buf[0..add], prefix[0..add]);
+    return add + keep;
+}
+
 fn readCooked(
     stdin: *std.Io.Reader,
     buf: []u8,
@@ -707,4 +764,20 @@ test "syntax highlighting kinds" {
     try std.testing.expectEqual(SpanKind.operator, spanKind("x += 1", 2));
     try std.testing.expectEqual(SpanKind.number, spanKind("1e-2", 2));
     try std.testing.expectEqual(SpanKind.number, spanKind("1.5e3", 4));
+}
+
+test "prependBytes keeps the prefix in front" {
+    var buf: [16]u8 = undefined;
+    buf[0] = 'i';
+    buf[1] = 'f';
+    const n = prependBytes(&buf, 2, "    ");
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqualStrings("    if", buf[0..n]);
+}
+
+test "allSpaces treats empty as blank" {
+    try std.testing.expect(allSpaces(""));
+    try std.testing.expect(allSpaces("    "));
+    try std.testing.expect(allSpaces("\t  "));
+    try std.testing.expect(!allSpaces("    }"));
 }

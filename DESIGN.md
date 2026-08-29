@@ -731,6 +731,7 @@ INTERACTIVE COMMANDS:
 - [x] ANSI color output (disabled when stdin is not a tty; --no-color)
 - [x] Syntax highlighting (REPL input: keywords, numbers, operators, comments, strings)
 - [x] Line editing with history (`~/.ac_history`; arrows, backspace)
+- [x] Continuation indent in the REPL (4 spaces per `{` depth; `}` one level out)
 - [x] Tab completion
 - [x] Better error messages with context (caret diagnostics)
 

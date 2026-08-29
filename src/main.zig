@@ -587,6 +587,33 @@ const CliAction = union(enum) {
     stdin,
 };
 
+fn continuationIndent(depth: i32) usize {
+    if (depth <= 0) return 0;
+    const capped: i32 = @min(depth, 8);
+    return @as(usize, @intCast(capped)) * repl_edit.indent_width;
+}
+
+/// If the first non-space is `}`, set leading spaces to one indent
+/// step outside the current brace depth (the closer of this block).
+fn alignCloserIndent(buf: []u8, len: usize, depth: i32) usize {
+    var ws: usize = 0;
+    while (ws < len and (buf[ws] == ' ' or buf[ws] == '\t')) : (ws += 1) {}
+    if (ws >= len or buf[ws] != '}') return len;
+    const want = continuationIndent(depth - 1);
+    if (want == ws) return len;
+    const rest = len - ws;
+    if (want < ws) {
+        const drop = ws - want;
+        if (rest > 0) std.mem.copyForwards(u8, buf[want .. want + rest], buf[ws..len]);
+        return len - drop;
+    }
+    const add = want - ws;
+    if (len + add > buf.len) return len;
+    if (rest > 0) std.mem.copyBackwards(u8, buf[want .. want + rest], buf[ws..len]);
+    @memset(buf[0..want], ' ');
+    return len + add;
+}
+
 fn formatPrompt(buf: []u8, state: *const State, continuation: bool) []const u8 {
     if (continuation) {
         if (state.color_enabled) {
@@ -610,9 +637,16 @@ fn readPhysicalLine(
     editor: ?*repl_edit.Editor,
     stdout: ?*std.Io.Writer,
     prompt: []const u8,
+    initial: []const u8,
 ) usize {
     if (editor) |ed| {
-        return ed.readLine(stdin, stdout.?, prompt, buf, eof_out, stderr);
+        return ed.readLine(stdin, stdout.?, prompt, buf, eof_out, stderr, initial);
+    }
+    if (initial.len > 0) {
+        if (stdout) |out| {
+            out.writeAll(initial) catch {};
+            out.flush() catch {};
+        }
     }
     var n: usize = 0;
     while (true) {
@@ -632,7 +666,7 @@ fn readPhysicalLine(
             n += 1;
         }
     }
-    return n;
+    return repl_edit.prependBytes(buf, n, initial);
 }
 
 /// Read one logical line: a physical line spliced with the next one when
@@ -645,11 +679,12 @@ fn readInputLine(
     editor: ?*repl_edit.Editor,
     stdout: ?*std.Io.Writer,
     prompt: []const u8,
+    initial: []const u8,
 ) usize {
-    var line_len = readPhysicalLine(stdin, buf, eof_out, stderr, editor, stdout, prompt);
+    var line_len = readPhysicalLine(stdin, buf, eof_out, stderr, editor, stdout, prompt, initial);
     while (line_len >= 1 and buf[line_len - 1] == '\\' and !eof_out.*) {
         line_len -= 1; // drop the backslash
-        const part = readPhysicalLine(stdin, buf[line_len..], eof_out, stderr, editor, stdout, "");
+        const part = readPhysicalLine(stdin, buf[line_len..], eof_out, stderr, editor, stdout, "", "");
         line_len += part;
         if (eof_out.* and part == 0) break;
     }
@@ -774,7 +809,7 @@ fn runRepl(
         // Read one logical line (spliced on trailing backslashes).
         var line_buf: [4096]u8 = undefined;
         var hit_eof = false;
-        const line_len = readInputLine(stdin, &line_buf, &hit_eof, stderr, ed, stdout, prompt);
+        const line_len = readInputLine(stdin, &line_buf, &hit_eof, stderr, ed, stdout, prompt, "");
 
         // Multiline defines: accumulate lines while braces stay unbalanced.
         // dc mode has no brace syntax, so no accumulation there.
@@ -791,7 +826,15 @@ fn runRepl(
             }
             var cont_buf: [4096]u8 = undefined;
             var cont_eof = false;
-            const cont_len = readInputLine(stdin, &cont_buf, &cont_eof, stderr, ed, stdout, cont_prompt);
+            const depth = netBraceDepth(acc.items);
+            var indent_buf: [32]u8 = undefined;
+            const indent_n = if (state.interactive) continuationIndent(depth) else 0;
+            @memset(indent_buf[0..indent_n], ' ');
+            const indent = indent_buf[0..indent_n];
+            var cont_len = readInputLine(stdin, &cont_buf, &cont_eof, stderr, ed, stdout, cont_prompt, indent);
+            if (state.interactive) {
+                cont_len = alignCloserIndent(&cont_buf, cont_len, depth);
+            }
             if (cont_len == 0 and cont_eof) {
                 // Stream ended mid-define: discard and exit.
                 acc.clearRetainingCapacity();
@@ -1092,6 +1135,51 @@ test "brace depth scanner" {
     try std.testing.expectEqual(@as(i32, 0), netBraceDepth(""));
     try std.testing.expectEqual(@as(i32, 1), netBraceDepth("a[0] = {"));
     try std.testing.expectEqual(@as(i32, 0), netBraceDepth("{ /* } */ }"));
+}
+
+test "continuation indent follows brace depth" {
+    try std.testing.expectEqual(@as(usize, 0), continuationIndent(0));
+    try std.testing.expectEqual(@as(usize, 0), continuationIndent(-1));
+    try std.testing.expectEqual(@as(usize, 4), continuationIndent(1));
+    try std.testing.expectEqual(@as(usize, 8), continuationIndent(2));
+    try std.testing.expectEqual(@as(usize, 32), continuationIndent(8));
+    try std.testing.expectEqual(@as(usize, 32), continuationIndent(9));
+}
+
+test "alignCloserIndent unindents a closing brace" {
+    var buf: [64]u8 = undefined;
+    const a = "    }";
+    @memcpy(buf[0..a.len], a);
+    try std.testing.expectEqualStrings("}", buf[0..alignCloserIndent(&buf, a.len, 1)]);
+    const b = "        }";
+    @memcpy(buf[0..b.len], b);
+    try std.testing.expectEqualStrings("    }", buf[0..alignCloserIndent(&buf, b.len, 2)]);
+    const c = "}";
+    @memcpy(buf[0..c.len], c);
+    try std.testing.expectEqualStrings("}", buf[0..alignCloserIndent(&buf, c.len, 1)]);
+    const d = "}";
+    @memcpy(buf[0..d.len], d);
+    try std.testing.expectEqualStrings("    }", buf[0..alignCloserIndent(&buf, d.len, 2)]);
+    const e = "    } else {";
+    @memcpy(buf[0..e.len], e);
+    try std.testing.expectEqualStrings("} else {", buf[0..alignCloserIndent(&buf, e.len, 1)]);
+    const f = "    if (n <= 1) return 1";
+    @memcpy(buf[0..f.len], f);
+    try std.testing.expectEqualStrings(f, buf[0..alignCloserIndent(&buf, f.len, 1)]);
+}
+
+test "processReplLines accepts indented define" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    var dc = Dc.init(&state);
+    defer dc.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const src = "define f(x) {\n    return x + 1\n}\nf(3)\n";
+    _ = try processReplLines(&state, src, &w, &dc);
+    try std.testing.expectEqualStrings("4\n", w.buffered());
 }
 
 test "cli scale and base parsers" {
