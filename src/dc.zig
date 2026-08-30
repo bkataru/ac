@@ -80,6 +80,10 @@ pub const Dc = struct {
     }
 
     fn binary(self: *Self, op: fn (*BigDec, BigDec, BigDec, usize) @import("num.zig").Error!void) !void {
+        return self.binaryScale(op, self.state.scale);
+    }
+
+    fn binaryScale(self: *Self, op: fn (*BigDec, BigDec, BigDec, usize) @import("num.zig").Error!void, scale: usize) !void {
         if (self.stack.items.len < 2) return error.StackEmpty;
         var b = try self.popNum();
         defer b.deinit();
@@ -87,7 +91,7 @@ pub const Dc = struct {
         defer a.deinit();
         var r = BigDec.init(self.allocator);
         errdefer r.deinit();
-        op(&r, a, b, self.state.scale) catch |e| switch (e) {
+        op(&r, a, b, scale) catch |e| switch (e) {
             error.DivisionByZero => return error.DivisionByZero,
             error.NonIntegerExponent => return error.NonIntegerExponent,
             else => return error.OutOfMemory,
@@ -299,7 +303,7 @@ pub const Dc = struct {
                 },
                 '+' => try self.binary(BigDec.add),
                 '-' => try self.binary(BigDec.sub),
-                '*' => try self.binary(BigDec.mul),
+                '*' => try self.binaryScale(BigDec.mul, std.math.maxInt(usize)),
                 '/' => try self.binary(BigDec.div),
                 '%' => try self.binary(BigDec.mod),
                 '^' => try self.binary(BigDec.pow),

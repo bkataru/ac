@@ -698,7 +698,7 @@ INTERACTIVE COMMANDS:
 
 ### Phase 1: MVP (Core Calculator)
 - [x] Project setup (build.zig, build.zig.zon)
-- [x] BigDec: add, sub, mul, div, mod, pow, sqrt (add/sub/mul exact; clip on print and / % sqrt pow)
+- [x] BigDec: add, sub, mul, div, mod, pow, sqrt (add/sub exact; POSIX mul scale; clip on print and / % sqrt pow)
 - [x] Lexer for numbers and basic operators
 - [x] Infix parser (Pratt parsing)
 - [x] Basic evaluator

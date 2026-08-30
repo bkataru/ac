@@ -28,6 +28,7 @@ const fixtures = [_]Fixture{
     .{ .name = "length", .source = @embedFile("length.ac"), .expected = @embedFile("length.out") },
     .{ .name = "arrays", .source = @embedFile("arrays.ac"), .expected = @embedFile("arrays.out") },
     .{ .name = "loops", .source = @embedFile("loops.ac"), .expected = @embedFile("loops.out") },
+    .{ .name = "phi", .source = @embedFile("phi.ac"), .expected = @embedFile("phi.out"), .mathlib = true },
     .{ .name = "dc_extra", .source = @embedFile("dc_extra.dc"), .expected = @embedFile("dc_extra.out"), .rpn = true },
     .{ .name = "gnu_assign", .source = @embedFile("gnu_assign.ac"), .expected = @embedFile("gnu_assign.out"), .echo_assign = true },
     .{ .name = "standard", .source = @embedFile("standard.ac"), .expected = @embedFile("standard.out"), .standard = true },

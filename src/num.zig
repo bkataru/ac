@@ -680,7 +680,6 @@ pub const BigDec = struct {
     /// factors have at least `karatsuba_cutoff` limbs. Truncation to
     /// `scale` is NOT applied here — the full exact product is kept.
     pub fn mul(self: *Self, a: Self, b: Self, scale: usize) Error!void {
-        _ = scale;
         if (a.isZero() or b.isZero()) {
             self.len = 0;
             self.rdx = 0;
@@ -688,6 +687,12 @@ pub const BigDec = struct {
             return;
         }
         try self.mulWithCutoff(a, b, karatsuba_cutoff);
+        // POSIX bc: min(a.scale+b.scale, max(scale, a.scale, b.scale)).
+        const a_scale = a.fracDigitCount();
+        const b_scale = b.fracDigitCount();
+        const bound = @max(scale, @max(a_scale, b_scale));
+        const want = @min(a_scale +| b_scale, bound);
+        self.truncateFracDigits(want);
     }
 
     /// Multiply with an explicit Karatsuba limb cutoff (tests use 2).
@@ -839,8 +844,8 @@ pub const BigDec = struct {
         self.rdx = out_rdx;
         self.neg = a.neg != b.neg;
         self.normalize();
-        // Drop the guard limbs: bc truncates the quotient to `scale`
-        // fractional digits.
+        // Drop the guard limbs, then extra digits in the last limb, so
+        // the quotient has at most `scale` fractional digits.
         const want_frac = (scale + BASE_DIGS - 1) / BASE_DIGS;
         if (self.rdx > want_frac) {
             const drop = self.rdx - want_frac;
@@ -854,6 +859,7 @@ pub const BigDec = struct {
                 self.normalize();
             }
         }
+        self.truncateFracDigits(scale);
     }
     /// a mod b with bc semantics: a - trunc_to_scale(a/b) * b.
     pub fn mod(self: *Self, a: Self, b: Self, scale: usize) Error!void {
@@ -1020,6 +1026,37 @@ pub const BigDec = struct {
         const frac = self.fracDigitCount();
         if (int_digits == 0) return frac;
         return int_digits + frac;
+    }
+    /// Truncate toward zero so at most `want` fractional digits remain.
+    fn truncateFracDigits(self: *Self, want: usize) void {
+        const have = self.rdx * BASE_DIGS;
+        if (want >= have) return;
+        const extra = have - want;
+        const drop_limbs = extra / BASE_DIGS;
+        const drop_digits = extra % BASE_DIGS;
+        if (drop_limbs > 0) {
+            if (drop_limbs >= self.len) {
+                self.len = 0;
+                self.rdx = 0;
+                self.neg = false;
+                return;
+            }
+            std.mem.copyForwards(Limb, self.limbs[0 .. self.len - drop_limbs], self.limbs[drop_limbs..self.len]);
+            self.len -= drop_limbs;
+            self.rdx -= @min(self.rdx, drop_limbs);
+        }
+        if (drop_digits > 0 and self.len > 0) {
+            var p: i64 = 1;
+            var d: usize = 0;
+            while (d < drop_digits) : (d += 1) p *= 10;
+            self.limbs[0] = @divTrunc(self.limbs[0], p) * p;
+        }
+        self.normalize();
+        if (self.isZero()) {
+            self.len = 0;
+            self.rdx = 0;
+            self.neg = false;
+        }
     }
     fn dropFraction(self: *Self) void {
         if (self.rdx == 0) return;
@@ -1300,6 +1337,43 @@ test "div truncates at scale" {
     try q.div(x, y, 6);
     const f = try q.toF64();
     try std.testing.expectApproxEqAbs(@as(f64, 10.0 / 3.0), f, 1e-5);
+}
+
+test "mul truncates to POSIX scale" {
+    const a = std.testing.allocator;
+    var x = try BigDec.parse(a, "0.33", 10);
+    defer x.deinit();
+    var y = try BigDec.parse(a, "0.33", 10);
+    defer y.deinit();
+    var p = BigDec.init(a);
+    defer p.deinit();
+    try p.mul(x, y, 2);
+    var want = try BigDec.parse(a, "0.10", 10);
+    defer want.deinit();
+    try std.testing.expectEqual(std.math.Order.eq, BigDec.cmp(p, want));
+}
+
+test "mul of scale-20 values does not grow rdx" {
+    const a = std.testing.allocator;
+    var one = try BigDec.fromInt(a, 1);
+    defer one.deinit();
+    var three = try BigDec.fromInt(a, 3);
+    defer three.deinit();
+    var acc = BigDec.init(a);
+    defer acc.deinit();
+    try acc.div(one, three, 20);
+    var fac = try acc.clone(a);
+    defer fac.deinit();
+    try std.testing.expect(acc.fracDigitCount() <= 20);
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var t = BigDec.init(a);
+        try t.mul(acc, fac, 20);
+        acc.deinit();
+        acc = t;
+    }
+    try std.testing.expect(acc.rdx <= 3);
+    try std.testing.expect(acc.fracDigitCount() <= 20);
 }
 test "digit counts" {
     const a = std.testing.allocator;

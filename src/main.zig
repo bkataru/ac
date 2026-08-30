@@ -1182,6 +1182,58 @@ test "processReplLines accepts indented define" {
     try std.testing.expectEqualStrings("4\n", w.buffered());
 }
 
+test "series while s!=t terminates at scale 20" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.scale = 20;
+    var dc = Dc.init(&state);
+    defer dc.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const src =
+        \\define f() {
+        \\auto s,t,b,q,i
+        \\s=2; t=0; b=2; q=4; i=1
+        \\while(s!=t)
+        \\s=(t=s)+(b*=q/(i+=2))
+        \\return s
+        \\}
+        \\f()
+    ;
+    _ = try processReplLines(&state, src, &w, &dc);
+    const got = w.buffered();
+    try std.testing.expect(got.len > 1);
+    try std.testing.expect(got[0] >= '1' and got[0] <= '9');
+}
+
+test "GNU bc phi(2) at scale 20" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+    state.color_enabled = false;
+    state.mathlib_loaded = true;
+    state.scale = 20;
+    var dc = Dc.init(&state);
+    defer dc.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const src =
+        \\define phi(x) {
+        \\    auto s,t,b,q,i,const
+        \\    s=x; t=0; b=x; q=x*x; i=1
+        \\    while(s!=t)
+        \\        s=(t=s)+(b*=q/(i+=2))
+        \\    const=0.5*l(8*a(1))
+        \\    return .5+s*e(-.5*q-const)
+        \\}
+        \\phi(2)
+    ;
+    _ = try processReplLines(&state, src, &w, &dc);
+    try std.testing.expectEqualStrings("0.97724986805182079278\n", w.buffered());
+}
+
 test "cli scale and base parsers" {
     try std.testing.expectEqual(@as(usize, 20), parseDecUsize("20").?);
     try std.testing.expect(parseDecUsize("") == null);
