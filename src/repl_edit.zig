@@ -203,6 +203,7 @@ pub const Editor = struct {
             };
             switch (ch) {
                 '\n', '\r' => {
+                    swallowMatchingLineEnd(stdin, ch);
                     stdout.writeAll("\r\n") catch {};
                     stdout.flush() catch {};
                     self.add(line.items) catch {};
@@ -653,6 +654,15 @@ fn allSpaces(s: []const u8) bool {
     return true;
 }
 
+/// If Enter arrived as CR+LF (or LF+CR) in one buffer, drop the mate.
+/// Only looks at already-buffered bytes so a TTY Enter of a single CR
+/// does not block waiting for the next key.
+fn swallowMatchingLineEnd(stdin: *std.Io.Reader, first: u8) void {
+    const other: u8 = if (first == '\r') '\n' else '\r';
+    const buffered = stdin.buffered();
+    if (buffered.len > 0 and buffered[0] == other) stdin.toss(1);
+}
+
 fn restoreInitial(line: *std.ArrayList(u8), allocator: Allocator, initial: []const u8) void {
     line.clearRetainingCapacity();
     line.appendSlice(allocator, initial) catch {};
@@ -780,4 +790,106 @@ test "allSpaces treats empty as blank" {
     try std.testing.expect(allSpaces("    "));
     try std.testing.expect(allSpaces("\t  "));
     try std.testing.expect(!allSpaces("    }"));
+}
+
+/// Drive `readLine` with a byte script. `raw` matches a TTY editor.
+fn feedEditor(
+    allocator: Allocator,
+    raw: bool,
+    color: bool,
+    input: []const u8,
+    prompt: []const u8,
+    initial: []const u8,
+    line_buf: []u8,
+    draw_buf: []u8,
+) !struct { n: usize, drawn: []const u8, eof: bool } {
+    var ed = Editor.init(allocator);
+    defer ed.deinit();
+    ed.raw = raw;
+    ed.color = color;
+    var reader = std.Io.Reader.fixed(input);
+    var writer: std.Io.Writer = .fixed(draw_buf);
+    var err_buf: [64]u8 = undefined;
+    var errw: std.Io.Writer = .fixed(&err_buf);
+    var eof = false;
+    const n = ed.readLine(&reader, &writer, prompt, line_buf, &eof, &errw, initial);
+    return .{ .n = n, .drawn = writer.buffered(), .eof = eof };
+}
+
+test "raw editor seeds continuation indent before the first key" {
+    var line_buf: [64]u8 = undefined;
+    var draw_buf: [256]u8 = undefined;
+    const got = try feedEditor(
+        std.testing.allocator,
+        true,
+        false,
+        "if (n <= 1) return 1\n",
+        "..> ",
+        "    ",
+        &line_buf,
+        &draw_buf,
+    );
+    try std.testing.expectEqualStrings("    if (n <= 1) return 1", line_buf[0..got.n]);
+    try std.testing.expect(std.mem.indexOf(u8, got.drawn, "..>     ") != null);
+}
+
+test "raw editor unindents a closing brace on a blank prefix" {
+    var line_buf: [64]u8 = undefined;
+    var draw_buf: [256]u8 = undefined;
+    const got = try feedEditor(
+        std.testing.allocator,
+        true,
+        false,
+        "}\n",
+        "..> ",
+        "    ",
+        &line_buf,
+        &draw_buf,
+    );
+    try std.testing.expectEqualStrings("}", line_buf[0..got.n]);
+}
+
+test "raw editor Tab on a blank prefix adds one indent step" {
+    var line_buf: [64]u8 = undefined;
+    var draw_buf: [256]u8 = undefined;
+    const got = try feedEditor(
+        std.testing.allocator,
+        true,
+        false,
+        "\tx\n",
+        "..> ",
+        "",
+        &line_buf,
+        &draw_buf,
+    );
+    try std.testing.expectEqualStrings("    x", line_buf[0..got.n]);
+}
+
+test "raw editor treats CRLF as one Enter so indent is not swallowed" {
+    const allocator = std.testing.allocator;
+    var ed = Editor.init(allocator);
+    defer ed.deinit();
+    ed.raw = true;
+    ed.color = false;
+
+    // Windows consoles often deliver Enter as CR then LF. The leftover LF
+    // must not submit the next continuation line on its own.
+    var reader = std.Io.Reader.fixed("define f() {\r\nreturn 1\r\n}\r\n");
+    var draw_buf: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&draw_buf);
+    var err_buf: [64]u8 = undefined;
+    var errw: std.Io.Writer = .fixed(&err_buf);
+    var line: [64]u8 = undefined;
+    var eof = false;
+
+    const n1 = ed.readLine(&reader, &writer, "ac> ", &line, &eof, &errw, "");
+    try std.testing.expectEqualStrings("define f() {", line[0..n1]);
+    try std.testing.expect(!eof);
+
+    const n2 = ed.readLine(&reader, &writer, "..> ", &line, &eof, &errw, "    ");
+    try std.testing.expectEqualStrings("    return 1", line[0..n2]);
+    try std.testing.expect(!eof);
+
+    const n3 = ed.readLine(&reader, &writer, "..> ", &line, &eof, &errw, "    ");
+    try std.testing.expectEqualStrings("}", line[0..n3]);
 }
