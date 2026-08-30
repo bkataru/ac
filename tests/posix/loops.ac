@@ -9,3 +9,11 @@ define sum() {
   return s
 }
 sum()
+define count() {
+  auto i
+  i = 0
+  while (i < 3)
+    i = i + 1
+  return i
+}
+count()

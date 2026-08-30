@@ -47,7 +47,7 @@ With no files and no `-e`, `ac` starts a REPL.
 
 - Variables: `x = 3` (the assignment does not print), and the special variables `scale`, `ibase`, `obase`
 - Bases 2 to 16 for `ibase` and `obase`
-- `if`, `while`, `for`, and functions with `auto` locals and recursion
+- `if`, `while`, `for`, and functions with `auto` locals and recursion. A loop or `if` body may start on the next line.
 - Arrays: `a[0] = 3`. A bare name prints the array as `[3, 4]`.
 - Builtins: `sqrt(x)`, `length(x)`, `scale(x)`, `read()`, `abs`, `ceil`/`ceil(x,p)`, `floor`, `round`/`r(x,p)`, `gcd`, `lcm`, `factorial`/`f`, `perm`, `comb`, `max`, `min`, `root`, `cbrt`, `modexp`, `band`/`bor`/`bxor`, `bnot8`/`bnot16`/`bnot32`/`bnot64`, `bshl`/`bshr`, `rand()`, `irand(n)`, `sci(x)`, `eng(x)`
 - Math library with `-l`: `s`/`sin`, `c`/`cos`, `a`/`atan`, `t`/`tan`, `asin`, `acos`, `l`/`log`, `log2`/`l2`, `log10`/`l10`, `e`, `pi()`/`pi(s)`, `j(n, x)`. `-l` also sets `scale = 20`.

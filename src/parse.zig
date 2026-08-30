@@ -228,6 +228,7 @@ pub const Stmt = union(enum) {
                 allocator.free(stmts);
             },
             .func_def => |f| {
+                allocator.free(f.name);
                 for (f.params) |ps| allocator.free(ps.name);
                 if (f.params.len > 0) allocator.free(f.params);
                 for (f.auto_vars) |av| {
@@ -489,6 +490,35 @@ pub const Parser = struct {
         }
     }
 
+    fn skipNewlines(self: *Self) void {
+        while (self.current.kind == .newline) self.advance();
+    }
+
+    fn freeExpr(self: *Self, e: ?*Expr) void {
+        if (e) |x| {
+            x.deinit(self.allocator);
+            self.allocator.destroy(x);
+        }
+    }
+
+    fn freeStmt(self: *Self, s: ?*Stmt) void {
+        if (s) |x| {
+            x.deinit(self.allocator);
+            self.allocator.destroy(x);
+        }
+    }
+
+    /// Body of if/while/for. GNU/POSIX bc allow the statement on the next
+    /// line. A lone `;` is an empty statement.
+    fn parseControlBody(self: *Self) Error!*Stmt {
+        self.skipNewlines();
+        if (self.current.kind == .semicolon) {
+            self.advance();
+            return try self.newStmt(.{ .noop = {} });
+        }
+        return (try self.parseStatement()) orelse error.ExpectedExpression;
+    }
+
     fn newStmt(self: *Self, value: Stmt) Error!*Stmt {
         const s = try self.allocator.create(Stmt);
         s.* = value;
@@ -507,15 +537,15 @@ pub const Parser = struct {
     fn parseIf(self: *Self) Error!*Stmt {
         self.advance(); // consume 'if'
         const cond = try self.parseParenExpr();
-        const then_branch = (try self.parseStatement()) orelse {
-            cond.deinit(self.allocator);
-            self.allocator.destroy(cond);
-            return error.ExpectedExpression;
-        };
+        errdefer self.freeExpr(cond);
+        const then_branch = try self.parseControlBody();
+        errdefer self.freeStmt(then_branch);
         var else_branch: ?*Stmt = null;
+        errdefer self.freeStmt(else_branch);
+        self.skipNewlines();
         if (self.current.kind == .kw_else) {
             self.advance();
-            else_branch = try self.parseStatement();
+            else_branch = try self.parseControlBody();
         }
         return try self.newStmt(.{ .if_stmt = .{
             .cond = cond,
@@ -527,11 +557,9 @@ pub const Parser = struct {
     fn parseWhile(self: *Self) Error!*Stmt {
         self.advance(); // consume 'while'
         const cond = try self.parseParenExpr();
-        const body = (try self.parseStatement()) orelse {
-            cond.deinit(self.allocator);
-            self.allocator.destroy(cond);
-            return error.ExpectedExpression;
-        };
+        errdefer self.freeExpr(cond);
+        const body = try self.parseControlBody();
+        errdefer self.freeStmt(body);
         return try self.newStmt(.{ .while_stmt = .{ .cond = cond, .body = body } });
     }
 
@@ -544,6 +572,7 @@ pub const Parser = struct {
             null
         else
             try self.parseExpression(0);
+        errdefer self.freeExpr(init_e);
         if (self.current.kind != .semicolon) return error.ExpectedRightParen; // reuse: expects ';'
         self.advance();
 
@@ -551,6 +580,7 @@ pub const Parser = struct {
             null
         else
             try self.parseExpression(0);
+        errdefer self.freeExpr(cond_e);
         if (self.current.kind != .semicolon) return error.ExpectedRightParen;
         self.advance();
 
@@ -558,10 +588,12 @@ pub const Parser = struct {
             null
         else
             try self.parseExpression(0);
+        errdefer self.freeExpr(update_e);
         if (self.current.kind != .right_paren) return error.ExpectedRightParen;
         self.advance();
 
-        const body = (try self.parseStatement()) orelse return error.ExpectedExpression;
+        const body = try self.parseControlBody();
+        errdefer self.freeStmt(body);
 
         return try self.newStmt(.{ .for_stmt = .{
             .init = init_e,
@@ -1265,4 +1297,62 @@ test "infix error frees left operand" {
     var parser = Parser.init(&lexer, allocator);
     defer parser.deinit();
     try std.testing.expectError(error.UnexpectedToken, parser.parseTopLevel());
+}
+
+fn parseOrFail(src: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init(src);
+    var parser = Parser.init(&lexer, allocator);
+    defer parser.deinit();
+    const stmt = (try parser.parseTopLevel()) orelse return error.ExpectedExpression;
+    stmt.deinit(allocator);
+    allocator.destroy(stmt);
+}
+
+test "while body may start on the next line" {
+    try parseOrFail(
+        \\define f() {
+        \\auto i
+        \\i = 0
+        \\while (i < 2)
+        \\i = i + 1
+        \\return i
+        \\}
+    );
+}
+
+test "if/else bodies may start on the next line" {
+    try parseOrFail(
+        \\define f() {
+        \\if (1)
+        \\return 2
+        \\else
+        \\return 0
+        \\}
+    );
+}
+
+test "for body may start on the next line" {
+    try parseOrFail(
+        \\define f() {
+        \\auto i, s
+        \\s = 0
+        \\for (i = 1; i <= 3; i++)
+        \\s = s + i
+        \\return s
+        \\}
+    );
+}
+
+test "GNU bc phi example parses" {
+    try parseOrFail(
+        \\define phi(x) {
+        \\    auto s,t,b,q,i,const
+        \\    s=x; t=0; b=x; q=x*x; i=1
+        \\    while(s!=t)
+        \\        s=(t=s)+(b*=q/(i+=2))
+        \\    const=0.5*l(8*a(1))
+        \\    return .5+s*e(-.5*q-const)
+        \\}
+    );
 }
