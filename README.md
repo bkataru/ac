@@ -8,7 +8,7 @@
 A calculator for the terminal. A cousin of POSIX <code>bc</code> and <code>dc</code>. Written in Zig 0.16.0.
 </p>
 
-`ac` works with big decimal numbers of no fixed size. Addition, subtraction, and multiplication are exact. Division, remainder, square root, and power cut their results to `scale`.
+`ac` works with big decimal numbers of no fixed size. Addition and subtraction are exact. Infix `*` uses POSIX scale. RPN `*` keeps the full product. Division, remainder, square root, and power cut their results to `scale`.
 
 ## Modes
 

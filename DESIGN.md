@@ -748,7 +748,7 @@ INTERACTIVE COMMANDS:
 
 1. **Unit Tests**: Each module has inline tests
 2. **Integration Tests**: Full expression evaluation
-3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, extras, extras_mathlib, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
+3. **Compatibility Tests**: `tests/posix/` fixture pack (arith, scale, obase, fact, REPL multiline define, length, arrays, loops, phi under -l, extras, extras_mathlib, -l mathlib including j(), dc macros, dc Z/X/|/arrays)
 4. **Fuzz Testing**: Random integer `+` `-` `*` in `eval.zig`
 5. **Benchmarks**: Karatsuba vs schoolbook mul in `num.zig` (`zig build test`)
 
